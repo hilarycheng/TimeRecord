@@ -48,8 +48,25 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -z "$SDK_ROOT" ]; then
+            echo "Android SDK root is not set"
+            exit 1
+          fi
+
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-37" "build-tools;36.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;36.0.0"
+
+          # API 37 is currently installed by GitHub runners as android-37.0,
+          # while AGP/compileSdk=37 may still look for android-37.
+          if [ ! -e "$SDK_ROOT/platforms/android-37" ]; then
+            ln -s "$SDK_ROOT/platforms/android-37.0" "$SDK_ROOT/platforms/android-37"
+          fi
+
+          echo "Installed Android platforms:"
+          ls -la "$SDK_ROOT/platforms" | tail -n 30
+          test -f "$SDK_ROOT/platforms/android-37/android.jar"
+          test -d "$SDK_ROOT/build-tools/36.0.0"
 
       - name: Set up Gradle 9.6.0
         uses: gradle/actions/setup-gradle@v4
