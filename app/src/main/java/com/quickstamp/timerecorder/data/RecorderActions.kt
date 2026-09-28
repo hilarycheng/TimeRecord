@@ -25,7 +25,7 @@ object RecorderActions {
     ): RecordResult {
         val app = context.applicationContext
         val state = AppStore.load(app)
-        val commute = inferCommute(label, kind, state.tracking.mode, timestamp, state.settings.morningCutoffHour)
+        val commute = inferCommute(label, kind, state.tracking.mode, timestamp, state.settings.morningCutoffHour, state.events)
 
         val autoStop = if (kind == EventKind.BUS) ensureStopAtBoarding(app, state.events, commute, timestamp) else null
         val event = AppStore.record(
@@ -55,11 +55,19 @@ object RecorderActions {
         tracking: CommuteMode?,
         timestamp: Long,
         cutoff: Int,
-    ): CommuteMode? = when {
-        label in setOf("返工", "到餐廳", "到公司") -> CommuteMode.WORK
-        label in setOf("放工", "落車", "到屋企") -> CommuteMode.HOME
-        kind == EventKind.BUS || kind == EventKind.STOP -> tracking ?: HkTime.modeAt(timestamp, cutoff)
-        else -> null
+        events: List<RecorderEvent>,
+    ): CommuteMode? {
+        if (label in setOf("返工", "到餐廳", "到公司")) return CommuteMode.WORK
+        if (label in setOf("放工", "到屋企")) return CommuteMode.HOME
+        if (label == "落車") {
+            val latestBus = events
+                .asSequence()
+                .filter { it.kind == EventKind.BUS && it.timestamp <= timestamp && HkTime.date(it.timestamp) == HkTime.date(timestamp) }
+                .maxByOrNull { it.timestamp }
+            return latestBus?.commute ?: tracking ?: HkTime.modeAt(timestamp, cutoff)
+        }
+        if (kind == EventKind.BUS || kind == EventKind.STOP) return tracking ?: HkTime.modeAt(timestamp, cutoff)
+        return null
     }
 
     private fun ensureStopAtBoarding(

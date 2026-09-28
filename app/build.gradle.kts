@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 12
-        versionName = "2.5-history"
+        versionCode = 13
+        versionName = "2.6-smart-flow"
     }
 
     buildFeatures {

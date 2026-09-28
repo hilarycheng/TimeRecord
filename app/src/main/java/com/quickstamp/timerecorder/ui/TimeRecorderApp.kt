@@ -80,7 +80,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.DialogProperties
 import com.quickstamp.timerecorder.data.AppStore
 import com.quickstamp.timerecorder.data.RecorderActions
 import com.quickstamp.timerecorder.model.CommuteMode
@@ -105,7 +104,6 @@ import java.util.concurrent.Executors
 import kotlin.math.ceil
 
 private data class TapFeedback(val key: String, val text: String, val timestamp: Long)
-private enum class HistoryMetric { BOARDING, WAIT, JOURNEY }
 private enum class HistoryRange(val days: Long?) { DAYS_7(7), DAYS_30(30), DAYS_90(90), ALL(null) }
 
 @Composable
@@ -236,6 +234,10 @@ fun TimeRecorderApp() {
         scope.launch { drawerState.close() }
     }
 
+    BackHandler(enabled = historyOpen && drawerState.isClosed) {
+        historyOpen = false
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         // Keep Android's left-edge gesture exclusively for system Back.
@@ -265,6 +267,9 @@ fun TimeRecorderApp() {
             )
         }
     ) {
+        if (historyOpen) {
+            HistoryPage(state = state, onBack = { historyOpen = false })
+        } else {
         val today = HkTime.today(now)
         val mode = state.tracking.mode ?: HkTime.modeAt(now, state.settings.morningCutoffHour)
         val snapshot = if (mode == CommuteMode.WORK) state.etaWork else state.etaHome
@@ -374,27 +379,14 @@ fun TimeRecorderApp() {
                 }
 
                 item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 2.dp),
-                        verticalAlignment = Alignment.Bottom,
-                    ) {
-                        Text("Timeline", fontSize = 14.sp, fontWeight = FontWeight.Black, color = WebInk, modifier = Modifier.weight(1f))
-                        Text("長按可修改", fontSize = 10.sp, color = WebMuted)
-                    }
-                }
-
-                item {
                     TimelineCard(
                         events = events,
                         viewedDate = viewedDate,
                         now = now,
                         showSeconds = state.settings.showSeconds,
+                        nextAction = if (isToday) next else NextAction.Done,
                         onLongClick = { editing = it },
                     )
-                }
-
-                if (events.isNotEmpty() && !summary.complete) {
-                    item { TodaySummaryCard(events, viewedDate, completedFirst = false) }
                 }
             }
 
@@ -416,6 +408,7 @@ fun TimeRecorderApp() {
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
+        }
         }
     }
 
@@ -459,9 +452,6 @@ fun TimeRecorderApp() {
         )
     }
 
-    if (historyOpen) {
-        BusHistoryDialog(state = state, onDismiss = { historyOpen = false })
-    }
 }
 
 private fun feedbackFor(feedback: TapFeedback?, key: String): String? = if (feedback?.key == key) feedback.text else null
@@ -497,7 +487,7 @@ private fun DateHeader(
                 Text("›", fontSize = 31.sp, color = WebMuted)
             }
             TextButton(onClick = onHistory, modifier = Modifier.size(width = 58.dp, height = 50.dp)) {
-                Text("Chart", fontSize = 10.sp, fontWeight = FontWeight.Black, color = WebAccent2)
+                Text("圖表", fontSize = 11.sp, fontWeight = FontWeight.Black, color = WebAccent2)
             }
             TextButton(onClick = onSettings, modifier = Modifier.size(width = 44.dp, height = 50.dp)) {
                 Text("⚙", fontSize = 18.sp, color = WebAccent)
@@ -508,7 +498,7 @@ private fun DateHeader(
 
 @Composable
 private fun EtaPanel(mode: CommuteMode, snapshot: EtaSnapshot, now: Long, tracking: Boolean) {
-    val station = if (mode == CommuteMode.WORK) "德福花園 · 返工" else "屏麗徑南行 · 放工"
+    val station = if (mode == CommuteMode.WORK) "返工 · 德福花園" else "放工 · 屏麗徑南行"
     val age = if (snapshot.updatedAt > 0L) (now - snapshot.updatedAt).coerceAtLeast(0L) else 0L
     val status = when {
         snapshot.refreshingStartedAt > 0L -> "Refreshing… · 顯示上一筆 cache"
@@ -520,28 +510,31 @@ private fun EtaPanel(mode: CommuteMode, snapshot: EtaSnapshot, now: Long, tracki
     val remarks = snapshot.routes.values.flatten().map { it.remark.trim() }.filter { it.isNotBlank() }.distinct().take(2)
 
     ColorGradientCard(
-        colors = listOf(Color(0xFF241724), WebCard2, Color(0xFF132522)),
-        border = Color(0xFF4A3446),
+        colors = listOf(WebCard2, Color(0xFF171D28), WebCard),
+        border = WebLine,
         shape = RoundedCornerShape(21.dp),
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(station, fontSize = 12.sp, color = WebInk, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Column(Modifier.weight(1f)) {
+                    Text(station, fontSize = 18.sp, color = WebInk, fontWeight = FontWeight.Black)
+                    Text("下次班次預計到達時間", fontSize = 10.sp, color = WebMuted)
+                }
                 if (tracking) {
                     Surface(shape = RoundedCornerShape(99.dp), color = WebBusSoft, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2C5E59))) {
                         Text("LIVE", fontSize = 9.sp, fontWeight = FontWeight.Black, color = Color(0xFFC6FFF5), modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            EtaLine("38", snapshot, now)
-            Spacer(Modifier.height(4.dp))
-            EtaLine("42C", snapshot, now)
-            if (remarks.isNotEmpty()) {
-                Spacer(Modifier.height(7.dp))
-                remarks.forEach { Text("• $it", fontSize = 9.sp, lineHeight = 13.sp, color = Color(0xFFFFB8D4)) }
-            }
+            Spacer(Modifier.height(10.dp))
+            EtaLine("38", snapshot, now, WebBus)
             Spacer(Modifier.height(7.dp))
+            EtaLine("42C", snapshot, now, WebAccent)
+            if (remarks.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                remarks.forEach { Text("• $it", fontSize = 9.sp, lineHeight = 13.sp, color = WebWarm) }
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
                 status,
                 fontSize = 10.sp,
@@ -557,17 +550,42 @@ private fun EtaPanel(mode: CommuteMode, snapshot: EtaSnapshot, now: Long, tracki
 }
 
 @Composable
-private fun EtaLine(route: String, snapshot: EtaSnapshot, now: Long) {
+private fun EtaLine(route: String, snapshot: EtaSnapshot, now: Long, accent: Color) {
     val arrivals = snapshot.routes[route].orEmpty().filter { it.timestamp >= now - 60_000L }.take(3)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(route, fontSize = 30.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(78.dp), color = WebBus)
-        Text(
-            if (arrivals.isEmpty()) "—" else arrivals.joinToString("   ") { etaCountdown(it.timestamp, now) },
-            fontSize = 27.sp,
-            fontWeight = FontWeight.Black,
-            color = Color(0xFFD2FFF8),
-            maxLines = 1,
-        )
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(15.dp),
+        color = Color(0xFF121721),
+        border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(4.dp).height(44.dp).clip(RoundedCornerShape(99.dp)).background(accent))
+            Spacer(Modifier.width(10.dp))
+            Text(route, fontSize = 27.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(66.dp), color = WebInk)
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                repeat(3) { index ->
+                    val arrival = arrivals.getOrNull(index)
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            arrival?.let { etaCountdown(it.timestamp, now) } ?: "—",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Black,
+                            color = if (arrival != null) accent else WebDim,
+                            maxLines = 1,
+                        )
+                        Text(
+                            arrival?.let { HkTime.formatTime(it.timestamp, false) } ?: "—",
+                            fontSize = 9.sp,
+                            color = WebMuted,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -659,15 +677,15 @@ private fun StopTile(feedback: String?, onClick: () -> Unit, onLongClick: () -> 
     PressableTile(
         modifier = Modifier.fillMaxWidth().height(70.dp),
         shape = RoundedCornerShape(19.dp),
-        colors = listOf(Color(0xFF3A1B2B), Color(0xFF282033), WebCard2),
-        border = Color(0xFF74415B),
+        colors = listOf(Color(0xFF262242), Color(0xFF1E2132), WebCard2),
+        border = Color(0xFF4D4784),
         onClick = onClick,
         onLongClick = onLongClick,
     ) {
         Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("到巴士站", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFFFFD8E8))
-                Text("開始計等車時間", fontSize = 10.sp, color = Color(0xFFCAA2B5))
+                Text("到巴士站", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFFE8E4FF))
+                Text("開始計等車時間", fontSize = 10.sp, color = Color(0xFFA9A4D6))
             }
             if (feedback != null) Text(feedback, fontSize = 11.sp, color = WebGood, fontWeight = FontWeight.Bold)
         }
@@ -676,17 +694,22 @@ private fun StopTile(feedback: String?, onClick: () -> Unit, onLongClick: () -> 
 
 @Composable
 private fun BusTile(text: String, modifier: Modifier, feedback: String?, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val purple = text == "42C"
+    val accent = if (purple) WebAccent else WebBus
+    val soft = if (purple) Color(0xFF24213E) else WebBusSoft
+    val border = if (purple) Color(0xFF514A8A) else Color(0xFF35655E)
+    val foreground = if (purple) Color(0xFFD9D2FF) else Color(0xFFC6FFF5)
     PressableTile(
         modifier = modifier.height(98.dp),
         shape = RoundedCornerShape(20.dp),
-        colors = listOf(Color(0xFF18342F), WebBusSoft),
-        border = Color(0xFF35655E),
+        colors = listOf(if (purple) Color(0xFF2A2450) else Color(0xFF18342F), soft),
+        border = border,
         onClick = onClick,
         onLongClick = onLongClick,
     ) {
         Column(Modifier.fillMaxSize().padding(horizontal = 15.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
-            Text(text, fontSize = 32.sp, fontWeight = FontWeight.Black, color = Color(0xFFC6FFF5))
-            Text(feedback ?: "上車", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (feedback != null) WebGood else Color(0xFF8FCFC5))
+            Text(text, fontSize = 32.sp, fontWeight = FontWeight.Black, color = foreground)
+            Text(feedback ?: "上車", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (feedback != null) WebGood else accent)
         }
     }
 }
@@ -697,7 +720,7 @@ private enum class UtilityStyle { Warm, Accent, Neutral }
 private fun SmallAction(text: String, modifier: Modifier, style: UtilityStyle, onClick: () -> Unit) {
     val (bg, fg, border) = when (style) {
         UtilityStyle.Warm -> Triple(WebWarmSoft, Color(0xFFF9D995), Color(0xFF5B4C29))
-        UtilityStyle.Accent -> Triple(WebAccentSoft, Color(0xFFFFD8E8), Color(0xFF70405C))
+        UtilityStyle.Accent -> Triple(WebAccentSoft, Color(0xFFE7E1FF), Color(0xFF514A8A))
         UtilityStyle.Neutral -> Triple(WebCard, WebMuted, WebLine)
     }
     Surface(onClick = onClick, modifier = modifier.height(43.dp), shape = RoundedCornerShape(13.dp), color = bg, border = androidx.compose.foundation.BorderStroke(1.dp, border)) {
@@ -718,8 +741,8 @@ private fun SmartNextBar(
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).shadow(12.dp, RoundedCornerShape(22.dp)),
         shape = RoundedCornerShape(22.dp),
-        color = Color(0xF2141821),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4C3448)),
+        color = Color(0xF2151923),
+        border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
     ) {
         if (viewedDate != today) {
             SmartButton("返回今日", Modifier.fillMaxWidth().padding(8.dp), onReturnToday)
@@ -747,7 +770,7 @@ private fun SmartButton(text: String, modifier: Modifier, onClick: () -> Unit) {
             .height(62.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(17.dp))
-            .background(Brush.horizontalGradient(listOf(WebAccent, WebAccent2)))
+            .background(Brush.horizontalGradient(listOf(Color(0xFFFFC968), WebWarm)))
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
@@ -755,7 +778,7 @@ private fun SmartButton(text: String, modifier: Modifier, onClick: () -> Unit) {
                 onLongClick = {},
             ),
         contentAlignment = Alignment.Center,
-    ) { Text(text, color = Color(0xFF220C1B), fontWeight = FontWeight.Black, fontSize = 17.sp) }
+    ) { Text(text, color = Color(0xFF241A08), fontWeight = FontWeight.Black, fontSize = 17.sp) }
 }
 
 @Composable
@@ -764,69 +787,148 @@ private fun TimelineCard(
     viewedDate: LocalDate,
     now: Long,
     showSeconds: Boolean,
+    nextAction: NextAction,
     onLongClick: (RecorderEvent) -> Unit,
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth().shadow(8.dp, RoundedCornerShape(18.dp), clip = false),
-        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth().shadow(8.dp, RoundedCornerShape(20.dp), clip = false),
+        shape = RoundedCornerShape(20.dp),
         color = WebCard,
         border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
     ) {
-        if (events.isEmpty()) {
-            Text("未有記錄", color = WebMuted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp))
-        } else {
-            Column {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 13.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("▣", color = Color(0xFFAAB7D1), fontSize = 17.sp)
+                Spacer(Modifier.width(9.dp))
+                Text("今日記錄", fontSize = 18.sp, fontWeight = FontWeight.Black, color = WebInk, modifier = Modifier.weight(1f))
+                Text("長按可修改", fontSize = 9.sp, color = WebDim)
+            }
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = WebLine)
+
+            if (events.isEmpty()) {
+                Text("未有記錄", color = WebMuted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp))
+            } else {
                 events.forEachIndexed { index, event ->
-                    val next = events.getOrNull(index + 1)
-                    TimelineRow(event, durationLabel(event, next, viewedDate, now), showSeconds) { onLongClick(event) }
-                    if (index != events.lastIndex) HorizontalDivider(color = WebLine, thickness = 1.dp)
+                    val following = events.getOrNull(index + 1)
+                    val duration = durationLabel(event, following, viewedDate, now)
+                    TimelineEventRow(
+                        event = event,
+                        duration = duration,
+                        showSeconds = showSeconds,
+                        isFirst = index == 0,
+                        isLastEvent = index == events.lastIndex,
+                        hasPredicted = nextAction !is NextAction.Done,
+                        isLive = following == null && viewedDate == HkTime.today(now) && !event.terminal,
+                        onLongClick = { onLongClick(event) },
+                    )
                 }
+            }
+
+            val predicted = nextActionLabel(nextAction)
+            if (predicted != null) {
+                TimelinePredictedRow(predicted, hasEvents = events.isNotEmpty())
             }
         }
     }
 }
 
 @Composable
-private fun TimelineRow(event: RecorderEvent, duration: String, showSeconds: Boolean, onLongClick: () -> Unit) {
+private fun TimelineEventRow(
+    event: RecorderEvent,
+    duration: String,
+    showSeconds: Boolean,
+    isFirst: Boolean,
+    isLastEvent: Boolean,
+    hasPredicted: Boolean,
+    isLive: Boolean,
+    onLongClick: () -> Unit,
+) {
+    val accent = when (event.kind) {
+        EventKind.BUS -> if (event.route == "42C") WebAccent else WebBus
+        EventKind.STOP -> WebBus
+        EventKind.EXTRA -> WebWarm
+        else -> WebAccent
+    }
     Row(
-        Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onLongClick).padding(horizontal = 12.dp, vertical = 10.dp),
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = {}, onLongClick = onLongClick)
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Box(Modifier.width(34.dp).height(68.dp)) {
+            Canvas(Modifier.fillMaxSize()) {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                if (!isFirst) drawLine(WebLine, Offset(cx, 0f), Offset(cx, cy - 9f), strokeWidth = 3f)
+                if (!isLastEvent || hasPredicted) drawLine(accent.copy(alpha = 0.72f), Offset(cx, cy + 9f), Offset(cx, size.height), strokeWidth = 3f)
+                drawCircle(accent.copy(alpha = 0.18f), radius = 13f, center = Offset(cx, cy))
+                drawCircle(accent, radius = 7f, center = Offset(cx, cy))
+            }
+        }
         Text(
             HkTime.formatTime(event.timestamp, showSeconds),
             fontSize = 14.sp,
             fontWeight = FontWeight.Black,
-            modifier = Modifier.width(if (showSeconds) 82.dp else 65.dp),
+            modifier = Modifier.width(if (showSeconds) 82.dp else 66.dp),
             color = WebInk,
         )
-        Canvas(Modifier.size(7.dp)) {
-            drawCircle(
-                color = when (event.kind) {
-                    EventKind.BUS -> WebBus
-                    EventKind.STOP -> WebAccent
-                    EventKind.EXTRA -> WebWarm
-                    else -> WebAccent2
-                }
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(event.label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = WebInk, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (event.auto) {
-                Spacer(Modifier.width(5.dp))
-                Surface(shape = RoundedCornerShape(99.dp), color = Color.Transparent, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF5A4153))) {
-                    Text("AUTO", fontSize = 8.sp, color = Color(0xFFD9B8CA), modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(event.label, fontSize = 14.sp, fontWeight = FontWeight.Black, color = WebInk, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (event.auto) {
+                    Spacer(Modifier.width(5.dp))
+                    Surface(shape = RoundedCornerShape(99.dp), color = Color.Transparent, border = androidx.compose.foundation.BorderStroke(1.dp, WebLine)) {
+                        Text("AUTO", fontSize = 8.sp, color = WebMuted, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                    }
                 }
             }
+            Text(
+                timelineSecondary(event, duration, isLive),
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+                color = if (event.kind == EventKind.BUS) accent else WebMuted,
+            )
         }
-        Text(
-            duration,
-            fontSize = 11.sp,
-            fontWeight = if (event.terminal) FontWeight.Black else FontWeight.Medium,
-            color = if (event.terminal) WebAccent2 else WebMuted,
-            textAlign = TextAlign.End,
-        )
     }
+}
+
+private fun timelineSecondary(event: RecorderEvent, duration: String, isLive: Boolean): String = when {
+    event.terminal -> "今日行程完成"
+    event.kind == EventKind.STOP -> "等車 $duration"
+    event.kind == EventKind.BUS && isLive -> "巴士 · 進行中 $duration"
+    event.kind == EventKind.BUS -> "巴士 · $duration"
+    event.label == "返工" -> "已開始今日嘅行程"
+    isLive -> "進行中 $duration"
+    else -> "持續 $duration"
+}
+
+@Composable
+private fun TimelinePredictedRow(label: String, hasEvents: Boolean) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(34.dp).height(56.dp)) {
+            Canvas(Modifier.fillMaxSize()) {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                if (hasEvents) {
+                    drawLine(WebDim, Offset(cx, 0f), Offset(cx, cy - 9f), strokeWidth = 2f)
+                }
+                drawCircle(WebDim, radius = 8f, center = Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+            }
+        }
+        Text("下一步", fontSize = 10.sp, color = WebDim, modifier = Modifier.width(82.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 13.sp, color = WebMuted, fontWeight = FontWeight.Bold)
+            Text("Smart Next", fontSize = 9.sp, color = WebDim)
+        }
+    }
+}
+
+private fun nextActionLabel(next: NextAction): String? = when (next) {
+    is NextAction.Single -> next.action.label
+    NextAction.BusChoices -> "上 38 / 42C"
+    NextAction.Done -> null
 }
 
 private fun durationLabel(event: RecorderEvent, next: RecorderEvent?, viewedDate: LocalDate, now: Long): String {
@@ -840,8 +942,8 @@ private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate, compl
     val summary = RecorderAnalytics.daySummary(events, date)
     ColorGradientCard(
         modifier = Modifier.fillMaxWidth(),
-        colors = listOf(Color(0xFF241722), WebCard2, WebCard),
-        border = Color(0xFF493244),
+        colors = listOf(Color(0xFF171D28), WebCard2, WebCard),
+        border = WebLine,
         shape = RoundedCornerShape(18.dp),
     ) {
         Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -975,8 +1077,8 @@ private fun SettingsDrawer(
             Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = Color(0xFFA5F5E9))) {
                 Text("立即更新 ETA", fontWeight = FontWeight.Bold)
             }
-            OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFFB8D9))) {
-                Text("History / Graph / Weekday Pattern", fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebAccent2)) {
+                Text("圖表 / 歷史", fontWeight = FontWeight.Bold)
             }
             HorizontalDivider(color = WebLine)
             Text("資料", fontSize = 11.sp, color = WebMuted, fontWeight = FontWeight.Black)
@@ -1066,71 +1168,126 @@ private fun BackfillDialog(onDismiss: () -> Unit, onSelect: (String, EventKind, 
 private data class Backfill(val label: String, val kind: EventKind = EventKind.DEFAULT, val route: String? = null, val terminal: Boolean = false)
 
 @Composable
-private fun BusHistoryDialog(state: RecorderState, onDismiss: () -> Unit) {
-    var mode by remember { mutableStateOf(CommuteMode.HOME) }
-    var route by remember { mutableStateOf("38") }
-    var metric by remember { mutableStateOf(HistoryMetric.BOARDING) }
+private fun HistoryPage(state: RecorderState, onBack: () -> Unit) {
     var range by remember { mutableStateOf(HistoryRange.DAYS_30) }
-
     val threshold = range.days?.let { HkTime.today().minusDays(it - 1L) }
     fun inRange(timestamp: Long): Boolean = threshold == null || HkTime.date(timestamp) >= threshold
 
-    val bus = state.events
+    fun buses(mode: CommuteMode, route: String): List<RecorderEvent> = state.events
         .filter { it.kind == EventKind.BUS && it.route == route && RecorderAnalytics.commuteOf(it) == mode && inRange(it.timestamp) }
         .sortedBy { it.timestamp }
-    val journeys = RecorderAnalytics.journeySamples(state.events, route, mode)
-        .filter { inRange(it.bus.timestamp) }
-    val waits = RecorderAnalytics.waitJourneySamples(state.events, route, mode)
+
+    fun waits(mode: CommuteMode, route: String) = RecorderAnalytics.waitJourneySamples(state.events, route, mode)
         .filter { inRange(it.bus.timestamp) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        modifier = Modifier.fillMaxWidth(0.96f),
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        containerColor = WebCard2,
-        titleContentColor = WebInk,
-        textContentColor = WebInk,
-        title = { Text("Bus History / Charts", fontWeight = FontWeight.Black, color = WebInk) },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SelectPill("返工", mode == CommuteMode.WORK) { mode = CommuteMode.WORK }
-                    SelectPill("放工", mode == CommuteMode.HOME) { mode = CommuteMode.HOME }
+    fun journeys(mode: CommuteMode, route: String) = RecorderAnalytics.journeySamples(state.events, route, mode)
+        .filter { inRange(it.bus.timestamp) }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(WebBg)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onBack, modifier = Modifier.size(width = 52.dp, height = 48.dp)) {
+                        Text("‹", fontSize = 32.sp, color = WebInk)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text("歷史圖表", fontSize = 22.sp, fontWeight = FontWeight.Black, color = WebInk)
+                        Text("得 1 日資料都會照畫", fontSize = 10.sp, color = WebMuted)
+                    }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SelectPill("38", route == "38") { route = "38" }
-                    SelectPill("42C", route == "42C") { route = "42C" }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SelectPill("到站/上車", metric == HistoryMetric.BOARDING) { metric = HistoryMetric.BOARDING }
-                    SelectPill("等車", metric == HistoryMetric.WAIT) { metric = HistoryMetric.WAIT }
-                    SelectPill("車程", metric == HistoryMetric.JOURNEY) { metric = HistoryMetric.JOURNEY }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            }
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     SelectPill("7日", range == HistoryRange.DAYS_7) { range = HistoryRange.DAYS_7 }
                     SelectPill("30日", range == HistoryRange.DAYS_30) { range = HistoryRange.DAYS_30 }
                     SelectPill("3個月", range == HistoryRange.DAYS_90) { range = HistoryRange.DAYS_90 }
                     SelectPill("全部", range == HistoryRange.ALL) { range = HistoryRange.ALL }
                 }
-                HorizontalDivider(color = WebLine)
+            }
 
-                when (metric) {
-                    HistoryMetric.BOARDING -> BoardingHistory(bus)
-                    HistoryMetric.WAIT -> WaitHistory(waits)
-                    HistoryMetric.JOURNEY -> JourneyHistory(journeys)
-                }
-
-                HorizontalDivider(color = WebLine)
-                Text("Mon–Fri Pattern", fontSize = 13.sp, fontWeight = FontWeight.Black, color = WebAccent)
-                when (metric) {
-                    HistoryMetric.BOARDING -> WeekdayRowsBoarding(bus)
-                    HistoryMetric.WAIT -> WeekdayRowsWait(waits)
-                    HistoryMetric.JOURNEY -> WeekdayRowsJourney(journeys)
+            item { HistorySectionTitle("每日上車時間") }
+            item {
+                HistoryPairCard("返工") {
+                    HistoryRoutePlot("38", WebBus) { BoardingHistory(buses(CommuteMode.WORK, "38")) }
+                    HistoryRoutePlot("42C", WebAccent) { BoardingHistory(buses(CommuteMode.WORK, "42C")) }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
+            item {
+                HistoryPairCard("放工") {
+                    HistoryRoutePlot("38", WebBus) { BoardingHistory(buses(CommuteMode.HOME, "38")) }
+                    HistoryRoutePlot("42C", WebAccent) { BoardingHistory(buses(CommuteMode.HOME, "42C")) }
+                }
+            }
+
+            item { HistorySectionTitle("等車時間") }
+            item {
+                HistoryPairCard("返工") {
+                    HistoryRoutePlot("38", WebBus) { WaitHistory(waits(CommuteMode.WORK, "38")) }
+                    HistoryRoutePlot("42C", WebAccent) { WaitHistory(waits(CommuteMode.WORK, "42C")) }
+                }
+            }
+            item {
+                HistoryPairCard("放工") {
+                    HistoryRoutePlot("38", WebBus) { WaitHistory(waits(CommuteMode.HOME, "38")) }
+                    HistoryRoutePlot("42C", WebAccent) { WaitHistory(waits(CommuteMode.HOME, "42C")) }
+                }
+            }
+
+            item { HistorySectionTitle("車程時間") }
+            item {
+                HistoryPairCard("返工") {
+                    HistoryRoutePlot("38", WebBus) { JourneyHistory(journeys(CommuteMode.WORK, "38")) }
+                    HistoryRoutePlot("42C", WebAccent) { JourneyHistory(journeys(CommuteMode.WORK, "42C")) }
+                }
+            }
+            item {
+                HistoryPairCard("放工") {
+                    HistoryRoutePlot("38", WebBus) { JourneyHistory(journeys(CommuteMode.HOME, "38")) }
+                    HistoryRoutePlot("42C", WebAccent) { JourneyHistory(journeys(CommuteMode.HOME, "42C")) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistorySectionTitle(text: String) {
+    Text(text, fontSize = 15.sp, fontWeight = FontWeight.Black, color = WebInk, modifier = Modifier.padding(top = 4.dp, start = 2.dp))
+}
+
+@Composable
+private fun HistoryPairCard(title: String, content: @Composable () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = WebCard,
+        border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, fontSize = 12.sp, fontWeight = FontWeight.Black, color = WebAccent2)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun HistoryRoutePlot(route: String, accent: Color, content: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(4.dp).height(24.dp).clip(RoundedCornerShape(99.dp)).background(accent))
+        Spacer(Modifier.width(7.dp))
+        Text(route, fontSize = 13.sp, fontWeight = FontWeight.Black, color = WebInk)
+    }
+    content()
 }
 
 @Composable
@@ -1141,7 +1298,7 @@ private fun SelectPill(text: String, selected: Boolean, onClick: () -> Unit) {
         color = if (selected) WebAccentSoft else WebCard,
         border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) WebAccent else WebLine),
     ) {
-        Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = if (selected) Color(0xFFFFD8E8) else WebMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = if (selected) Color(0xFFE7E1FF) else WebMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
     }
 }
 
