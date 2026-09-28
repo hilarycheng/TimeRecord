@@ -1,0 +1,40 @@
+Time Recorder — Compose rewrite build status
+===========================================
+
+Source status
+- Native Jetpack Compose / Material 3 UI.
+- No runtime WebView or JavaScript UI.
+- Native KMB ETA client using HttpURLConnection.
+- Native Foreground Service: fixed 60-second ETA refresh while 返工/放工 tracking is active.
+- Native JobScheduler best-effort refresh outside active tracking.
+- Same applicationId: com.quickstamp.timerecorder.
+- Release signing configuration supports the existing update-compatible keystore via keystore.properties.
+
+Static QA performed in this environment
+- Checked project/source tree.
+- Checked AndroidManifest service/permissions declarations.
+- Checked there are no android.webkit imports / WebView constructors in app/src/main.
+- Kotlin parser pass found no syntax/"expecting" diagnostics; Android/Compose symbols cannot be resolved here because the Android SDK/Compose classpath is not installed.
+
+APK build status
+- NOT built in this container.
+- This execution environment does not contain Gradle, Android SDK, android.jar, aapt2, d8, or sdkmanager.
+- Binary downloads needed to install those tools are unavailable from the container network.
+- Therefore no Compose APK is being claimed or supplied from this environment.
+
+Required toolchain
+- JDK 17+
+- Android SDK Platform 37
+- Android Build Tools 36.0.0+
+- Gradle 9.6.x
+- Android Gradle Plugin 9.4.0
+
+Release signing
+1. Copy keystore.properties.example to keystore.properties.
+2. Point storeFile to the existing time-recorder-local.keystore.
+3. Fill the existing store/key password and alias.
+4. Build the release variant with Gradle/Android Studio.
+
+Important
+- The source bundle does not contain the private signing keystore or passwords.
+- Do not uninstall the old app before testing an update-signed build if preserving old app data matters.
