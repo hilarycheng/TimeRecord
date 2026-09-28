@@ -1,26 +1,28 @@
-# Time Recorder — Compose clean build
+# Time Recorder v2.2 — Native Compose, Web-theme visual refresh
 
-Native Android / Jetpack Compose version.
+Native Android app using Jetpack Compose. No WebView runtime.
 
-This build intentionally starts with a clean native data store. It does **not** import v1.x WebView/localStorage data and does not read the previous native-v2 preference file.
+## v2.2 changes
 
-## Startup hardening
-
-- No WebView runtime or legacy WebView storage scanner.
-- No JobScheduler or network request before the first Compose frame.
-- Background scheduling is deferred and failure-isolated.
-- Release minification/resource shrinking is temporarily disabled for stability.
-- ETA remains native and is refreshed by the foreground service while commute tracking is active.
+- Restores the visual language of the earlier Web UI in native Compose:
+  - charcoal `#090B10` background
+  - layered `#151923 / #1B202C` cards
+  - purple accent `#8B7CFF`
+  - teal bus accent `#41D6C3`
+  - amber extra-item accent `#FFBD5B`
+  - denser single-card Timeline layout
+- ETA is a separate large panel above the action buttons.
+- 38 / 42C remain dedicated large boarding buttons without embedded ETA text.
+- Explicit status-bar and navigation-bar padding fixes Android edge-to-edge overlap.
+- Settings drawer also applies system-bar insets.
+- All ETA/network/background logic stays native Android.
 
 ## GitHub Actions
 
-`.github/workflows/android-build.yml` builds only the signed release APK.
+`.github/workflows/android-build.yml` builds the release APK only.
 
-Required repository secrets:
-
+Required repository secrets for signed release:
 - `SIGNING_KEY_B64`
 - `SIGNING_STORE_PASSWORD`
 - `SIGNING_KEY_ALIAS`
 - `SIGNING_KEY_PASSWORD`
-
-The artifact appears at the bottom of the successful Actions run as `TimeRecorder-release-apk`.
