@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 7
-        versionName = "2.0-compose"
+        versionCode = 8
+        versionName = "2.1-compose-clean"
     }
 
     buildFeatures {
@@ -42,8 +42,8 @@ android {
     buildTypes {
         release {
             if (signingPropertiesFile.exists()) signingConfig = signingConfigs.getByName("release")
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

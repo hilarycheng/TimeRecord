@@ -8,21 +8,18 @@ import java.time.LocalDate
 import java.util.UUID
 
 object AppStore {
-    private const val PREFS = "time_recorder_native_v2"
+    private const val PREFS = "time_recorder_native_v3_clean"
     private const val KEY_STATE = "state_json"
     private const val KEY_VERSION = "version"
-    private const val KEY_MIGRATION_DONE = "legacy_migration_done"
     private val lock = Any()
 
     fun version(context: Context): Int = prefs(context).getInt(KEY_VERSION, 0)
 
     fun load(context: Context): RecorderState = synchronized(lock) {
-        maybeMigrateLegacy(context)
         parseState(prefs(context).getString(KEY_STATE, null))
     }
 
     fun mutate(context: Context, block: (RecorderState) -> RecorderState): RecorderState = synchronized(lock) {
-        maybeMigrateLegacy(context)
         val old = parseState(prefs(context).getString(KEY_STATE, null))
         val next = block(old)
         if (next != old) persist(context, next)
@@ -171,62 +168,6 @@ object AppStore {
             .putString(KEY_STATE, stateToJson(state).toString())
             .putInt(KEY_VERSION, p.getInt(KEY_VERSION, 0) + 1)
             .apply()
-    }
-
-    private fun maybeMigrateLegacy(context: Context) {
-        val p = prefs(context)
-        if (p.contains(KEY_STATE) || p.getBoolean(KEY_MIGRATION_DONE, false)) return
-        val legacy = runCatching { LegacyWebStorageImporter.findLegacyJson(context) }.getOrNull()
-        if (legacy != null) {
-            val state = legacyToState(legacy)
-            p.edit()
-                .putString(KEY_STATE, stateToJson(state).toString())
-                .putInt(KEY_VERSION, 1)
-                .putBoolean(KEY_MIGRATION_DONE, true)
-                .apply()
-        } else {
-            p.edit().putBoolean(KEY_MIGRATION_DONE, true).apply()
-        }
-    }
-
-    private fun legacyToState(root: JSONObject): RecorderState {
-        val events = mutableListOf<RecorderEvent>()
-        val arr = root.optJSONArray("events") ?: JSONArray()
-        for (i in 0 until arr.length()) {
-            val e = arr.optJSONObject(i) ?: continue
-            val label = e.optString("label", "")
-            if (label.isBlank()) continue
-            val ts = e.optLong("ts", 0L)
-            if (ts <= 0) continue
-            val kind = when (e.optString("kind")) {
-                "bus" -> EventKind.BUS
-                "extra" -> EventKind.EXTRA
-                else -> EventKind.DEFAULT
-            }
-            val route = e.optString("route").ifBlank {
-                if (kind == EventKind.BUS) label.removePrefix("上 ") else ""
-            }.ifBlank { null }
-            val commute = when (e.optString("commute")) {
-                "work" -> CommuteMode.WORK
-                "home" -> CommuteMode.HOME
-                else -> if (kind == EventKind.BUS) HkTime.modeAt(ts) else null
-            }
-            events += RecorderEvent(
-                id = e.optString("id").ifBlank { UUID.randomUUID().toString() },
-                timestamp = ts,
-                label = label,
-                kind = kind,
-                route = route,
-                commute = commute,
-                terminal = e.optBoolean("terminal", kind == EventKind.DEFAULT && label == "到屋企"),
-                auto = e.optBoolean("auto", false),
-            )
-        }
-        val settings = root.optJSONObject("settings")
-        return RecorderState(
-            events = events.sortedBy { it.timestamp },
-            settings = RecorderSettings(showSeconds = settings?.optBoolean("showSeconds", false) ?: false),
-        )
     }
 
     private fun parseState(raw: String?): RecorderState {

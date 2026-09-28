@@ -1,81 +1,26 @@
-# Time Recorder — Compose rewrite
+# Time Recorder — Compose clean build
 
-Native Android rewrite of the Time Recorder prototype. There is no WebView UI and no JavaScript runtime.
+Native Android / Jetpack Compose version.
 
-## Architecture
+This build intentionally starts with a clean native data store. It does **not** import v1.x WebView/localStorage data and does not read the previous native-v2 preference file.
 
-- Jetpack Compose + Material 3 dark UI.
-- Native `HttpURLConnection` client for the Hong Kong KMB ETA open-data API.
-- Native foreground service while a commute is active. It refreshes ETA on a fixed 60-second cadence and keeps a low-priority notification visible.
-- Native `JobScheduler` best-effort refresh outside active trips (15-minute Android system cadence, only 06:00–10:00 and 16:50–18:00 Hong Kong time).
-- SharedPreferences + compact JSON for local-only event, ETA-cache and settings storage.
-- Best-effort one-time migration scanner for the old v1.x Chromium localStorage files. It never instantiates WebView and leaves the legacy files untouched.
+## Startup hardening
 
-## Fixed ETA context
+- No WebView runtime or legacy WebView storage scanner.
+- No JobScheduler or network request before the first Compose frame.
+- Background scheduling is deferred and failure-isolated.
+- Release minification/resource shrinking is temporarily disabled for stability.
+- ETA remains native and is refreshed by the foreground service while commute tracking is active.
 
-- Before 10:00 / WORK tracking: 德福花園, routes 38 / 42C toward the work direction.
-- After 10:00 / HOME tracking: 屏麗徑南行, routes 38 / 42C toward the home direction.
-- Pressing 返工 or 放工 explicitly selects the tracking direction and starts the foreground service.
-- Pressing 38 or 42C records boarding and stops the foreground service.
-- Cached ETA values are absolute timestamps. The UI counts them down locally and does not clear old values while a refresh is in progress.
+## GitHub Actions
 
-## Timeline rules
-
-- Each entry shows the duration until the next entry.
-- The last entry on today shows `current time - entry time` live.
-- A terminal 到屋企 entry shows `Ending`.
-- When a later day is opened, a previous day with events but no terminal entry gets an automatic `18:00 到屋企 · AUTO` event.
-- Long-press an action button to backfill a time.
-- Long-press a timeline row to rename, edit its time or delete it.
-
-## Build
-
-Requirements: Android SDK 37, Build Tools 36.0.0+, JDK 17+, Gradle 9.6.0+ (wrapper properties target 9.6.1), AGP 9.4.0.
-
-This source bundle intentionally does not contain the private signing key. Copy `keystore.properties.example` to `keystore.properties`, point it to the existing `time-recorder-local.keystore`, and fill the existing passwords to produce an update-compatible signed release build.
-
-The release build enables R8 minification and resource shrinking. No Room, Retrofit, Navigation, icon pack or chart library is included.
-
-## Package / version
-
-- applicationId: `com.quickstamp.timerecorder`
-- versionCode: 7
-- versionName: `2.0-compose`
-- minSdk: 26
-- targetSdk / compileSdk: 37
-
-## GitHub Actions build
-
-This project already contains the workflow at:
-
-`.github/workflows/android-build.yml`
-
-No separate workflow file is required.
-
-Repository secrets for a signed update-compatible release:
-
-- `SIGNING_KEY_B64`
-- `SIGNING_STORE_PASSWORD`
-- `SIGNING_KEY_ALIAS`
-- `SIGNING_KEY_PASSWORD`
-
-Do not commit the keystore or `keystore.properties`; `.gitignore` excludes them.
-
-### AGP 9.x compatibility
-
-The project intentionally keeps the external Kotlin Android plugin and uses:
-
-- `android.builtInKotlin=false`
-- `android.newDsl=false`
-
-This avoids the AGP 9.x new-DSL incompatibility shown by GitHub Actions while preserving the current Compose/Kotlin setup.
-
-## GitHub Actions release build
-
-The project uses AGP 9.4 built-in Kotlin. The workflow at `.github/workflows/android-build.yml` builds only the signed release APK.
+`.github/workflows/android-build.yml` builds only the signed release APK.
 
 Required repository secrets:
+
 - `SIGNING_KEY_B64`
 - `SIGNING_STORE_PASSWORD`
 - `SIGNING_KEY_ALIAS`
 - `SIGNING_KEY_PASSWORD`
+
+The artifact appears at the bottom of the successful Actions run as `TimeRecorder-release-apk`.
