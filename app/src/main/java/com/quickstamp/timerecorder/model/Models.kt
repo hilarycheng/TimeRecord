@@ -109,6 +109,19 @@ object HkTime {
         }
     }
 
+    /** Summary formatting uses explicit units so 41:50 can never be mistaken for 41h50m. */
+    fun formatDurationReadable(milliseconds: Long): String {
+        val totalSeconds = (milliseconds.coerceAtLeast(0L) / 1000L)
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return when {
+            hours > 0 -> "%dh %02dm %02ds".format(Locale.ENGLISH, hours, minutes, seconds)
+            minutes > 0 -> "%dm %02ds".format(Locale.ENGLISH, minutes, seconds)
+            else -> "%ds".format(Locale.ENGLISH, seconds)
+        }
+    }
+
     fun minuteOfDay(timestamp: Long): Int {
         val z = Instant.ofEpochMilli(timestamp).atZone(zone)
         return z.hour * 60 + z.minute

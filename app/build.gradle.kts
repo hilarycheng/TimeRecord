@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 10
-        versionName = "2.3-commute-insights"
+        versionCode = 11
+        versionName = "2.4-midnight-rose"
     }
 
     buildFeatures {

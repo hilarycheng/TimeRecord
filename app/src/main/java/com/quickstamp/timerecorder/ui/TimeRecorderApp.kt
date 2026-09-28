@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.view.HapticFeedbackConstants
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -79,6 +80,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.quickstamp.timerecorder.data.AppStore
 import com.quickstamp.timerecorder.data.RecorderActions
 import com.quickstamp.timerecorder.model.CommuteMode
@@ -228,9 +230,14 @@ fun TimeRecorderApp() {
         }
     }
 
+    BackHandler(enabled = drawerState.isOpen) {
+        scope.launch { drawerState.close() }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = true,
+        // Keep Android's left-edge gesture exclusively for system Back.
+        gesturesEnabled = false,
         drawerContent = {
             SettingsDrawer(
                 state = state,
@@ -256,9 +263,14 @@ fun TimeRecorderApp() {
             )
         }
     ) {
+        val today = HkTime.today(now)
         val mode = state.tracking.mode ?: HkTime.modeAt(now, state.settings.morningCutoffHour)
         val snapshot = if (mode == CommuteMode.WORK) state.etaWork else state.etaHome
         val events = state.events.filter { HkTime.date(it.timestamp) == viewedDate }.sortedBy { it.timestamp }
+        val summary = RecorderAnalytics.daySummary(events, viewedDate)
+        val isToday = viewedDate == today
+        val showLiveControls = isToday && !summary.complete
+        val showSmartBar = showLiveControls || !isToday
         val next = WorkflowPlanner.next(state.events, viewedDate, now)
 
         Box(
@@ -270,78 +282,90 @@ fun TimeRecorderApp() {
         ) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 112.dp),
+                contentPadding = PaddingValues(
+                    start = 12.dp,
+                    end = 12.dp,
+                    top = 8.dp,
+                    bottom = if (showSmartBar) 112.dp else 22.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(9.dp),
             ) {
                 item {
                     DateHeader(
                         date = viewedDate,
                         onPrevious = { viewedDate = viewedDate.minusDays(1) },
-                        onNext = { if (viewedDate < HkTime.today(now)) viewedDate = viewedDate.plusDays(1) },
+                        onNext = { if (viewedDate < today) viewedDate = viewedDate.plusDays(1) },
                         onPickDate = { showDatePicker(context, viewedDate) { viewedDate = it } },
+                        onHistory = { historyOpen = true },
                         onSettings = { scope.launch { drawerState.open() } },
                     )
                 }
 
-                item { EtaPanel(mode = mode, snapshot = snapshot, now = now, tracking = state.tracking.active) }
+                if (summary.complete && events.isNotEmpty()) {
+                    item { TodaySummaryCard(events, viewedDate, completedFirst = isToday) }
+                }
 
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        ActionTile("返工", Modifier.weight(1f), feedback = feedbackFor(feedback, "返工"), onClick = { recordAction("返工") }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("返工", timestamp = it, manual = true) }
-                        })
-                        ActionTile("放工", Modifier.weight(1f), feedback = feedbackFor(feedback, "放工"), onClick = { recordAction("放工") }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("放工", timestamp = it, manual = true) }
-                        })
+                if (showLiveControls) {
+                    item { EtaPanel(mode = mode, snapshot = snapshot, now = now, tracking = state.tracking.active) }
+
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            ActionTile("返工", Modifier.weight(1f), feedback = feedbackFor(feedback, "返工"), onClick = { recordAction("返工") }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("返工", timestamp = it, manual = true) }
+                            })
+                            ActionTile("放工", Modifier.weight(1f), feedback = feedbackFor(feedback, "放工"), onClick = { recordAction("放工") }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("放工", timestamp = it, manual = true) }
+                            })
+                        }
                     }
-                }
 
-                item {
-                    StopTile(
-                        feedback = feedbackFor(feedback, "到巴士站"),
-                        onClick = { recordAction("到巴士站", EventKind.STOP) },
-                        onLongClick = { showTimePicker(context, viewedDate, now) { recordAction("到巴士站", EventKind.STOP, timestamp = it, manual = true) } },
-                    )
-                }
-
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        BusTile("38", Modifier.weight(1f), feedback = feedbackFor(feedback, "38"), onClick = { recordAction("上 38", EventKind.BUS, "38") }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("上 38", EventKind.BUS, "38", timestamp = it, manual = true) }
-                        })
-                        BusTile("42C", Modifier.weight(1f), feedback = feedbackFor(feedback, "42C"), onClick = { recordAction("上 42C", EventKind.BUS, "42C") }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("上 42C", EventKind.BUS, "42C", timestamp = it, manual = true) }
-                        })
+                    item {
+                        StopTile(
+                            feedback = feedbackFor(feedback, "到巴士站"),
+                            onClick = { recordAction("到巴士站", EventKind.STOP) },
+                            onLongClick = { showTimePicker(context, viewedDate, now) { recordAction("到巴士站", EventKind.STOP, timestamp = it, manual = true) } },
+                        )
                     }
-                }
 
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        ActionTile("到餐廳", Modifier.weight(1f), feedback = feedbackFor(feedback, "到餐廳"), onClick = { recordAction("到餐廳") }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("到餐廳", timestamp = it, manual = true) }
-                        })
-                        ActionTile("到公司", Modifier.weight(1f), feedback = feedbackFor(feedback, "到公司"), onClick = { recordAction("到公司") }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("到公司", timestamp = it, manual = true) }
-                        })
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            BusTile("38", Modifier.weight(1f), feedback = feedbackFor(feedback, "38"), onClick = { recordAction("上 38", EventKind.BUS, "38") }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("上 38", EventKind.BUS, "38", timestamp = it, manual = true) }
+                            })
+                            BusTile("42C", Modifier.weight(1f), feedback = feedbackFor(feedback, "42C"), onClick = { recordAction("上 42C", EventKind.BUS, "42C") }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("上 42C", EventKind.BUS, "42C", timestamp = it, manual = true) }
+                            })
+                        }
                     }
-                }
 
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        ActionTile("落車", Modifier.weight(1f), feedback = feedbackFor(feedback, "落車"), onClick = { recordAction("落車") }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("落車", timestamp = it, manual = true) }
-                        })
-                        ActionTile("到屋企", Modifier.weight(1f), feedback = feedbackFor(feedback, "到屋企"), onClick = { recordAction("到屋企", terminal = true) }, onLongClick = {
-                            showTimePicker(context, viewedDate, now) { recordAction("到屋企", terminal = true, timestamp = it, manual = true) }
-                        })
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            ActionTile("到餐廳", Modifier.weight(1f), feedback = feedbackFor(feedback, "到餐廳"), onClick = { recordAction("到餐廳") }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("到餐廳", timestamp = it, manual = true) }
+                            })
+                            ActionTile("到公司", Modifier.weight(1f), feedback = feedbackFor(feedback, "到公司"), onClick = { recordAction("到公司") }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("到公司", timestamp = it, manual = true) }
+                            })
+                        }
                     }
-                }
 
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SmallAction("其他事", Modifier.weight(1f), UtilityStyle.Warm) { recordAction("其他事", EventKind.EXTRA) }
-                        SmallAction("補記", Modifier.weight(1f), UtilityStyle.Accent) { backfillOpen = true }
-                        SmallAction("Undo", Modifier.weight(0.72f), UtilityStyle.Neutral) { AppStore.undo(context, viewedDate); reload() }
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            ActionTile("落車", Modifier.weight(1f), feedback = feedbackFor(feedback, "落車"), onClick = { recordAction("落車") }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("落車", timestamp = it, manual = true) }
+                            })
+                            ActionTile("到屋企", Modifier.weight(1f), feedback = feedbackFor(feedback, "到屋企"), onClick = { recordAction("到屋企", terminal = true) }, onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("到屋企", terminal = true, timestamp = it, manual = true) }
+                            })
+                        }
+                    }
+
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SmallAction("其他事", Modifier.weight(1f), UtilityStyle.Warm) { recordAction("其他事", EventKind.EXTRA) }
+                            SmallAction("補記", Modifier.weight(1f), UtilityStyle.Accent) { backfillOpen = true }
+                            SmallAction("Undo", Modifier.weight(0.72f), UtilityStyle.Neutral) { AppStore.undo(context, viewedDate); reload() }
+                        }
                     }
                 }
 
@@ -350,7 +374,7 @@ fun TimeRecorderApp() {
                         modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 2.dp),
                         verticalAlignment = Alignment.Bottom,
                     ) {
-                        Text("Timeline", fontSize = 14.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                        Text("Timeline", fontSize = 14.sp, fontWeight = FontWeight.Black, color = WebInk, modifier = Modifier.weight(1f))
                         Text("長按可修改", fontSize = 10.sp, color = WebMuted)
                     }
                 }
@@ -365,8 +389,8 @@ fun TimeRecorderApp() {
                     )
                 }
 
-                if (events.isNotEmpty()) {
-                    item { TodaySummaryCard(events, viewedDate) }
+                if (events.isNotEmpty() && !summary.complete) {
+                    item { TodaySummaryCard(events, viewedDate, completedFirst = false) }
                 }
             }
 
@@ -374,18 +398,20 @@ fun TimeRecorderApp() {
                 hostState = snackbar,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(start = 12.dp, end = 12.dp, bottom = 86.dp),
+                    .padding(start = 12.dp, end = 12.dp, bottom = if (showSmartBar) 86.dp else 12.dp),
             )
 
-            SmartNextBar(
-                next = next,
-                viewedDate = viewedDate,
-                today = HkTime.today(now),
-                onReturnToday = { viewedDate = HkTime.today(now) },
-                onAction = { a -> recordAction(a.label, a.kind, a.route, a.terminal) },
-                onBus = { route -> recordAction("上 $route", EventKind.BUS, route) },
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
+            if (showSmartBar) {
+                SmartNextBar(
+                    next = next,
+                    viewedDate = viewedDate,
+                    today = today,
+                    onReturnToday = { viewedDate = today },
+                    onAction = { a -> recordAction(a.label, a.kind, a.route, a.terminal) },
+                    onBus = { route -> recordAction("上 $route", EventKind.BUS, route) },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
         }
     }
 
@@ -442,6 +468,7 @@ private fun DateHeader(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onPickDate: () -> Unit,
+    onHistory: () -> Unit,
     onSettings: () -> Unit,
 ) {
     Surface(
@@ -452,7 +479,7 @@ private fun DateHeader(
     ) {
         Row(Modifier.height(50.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onPrevious, modifier = Modifier.size(width = 52.dp, height = 50.dp)) {
-                Text("‹", fontSize = 31.sp, color = Color(0xFFDAD0D9))
+                Text("‹", fontSize = 31.sp, color = WebMuted)
             }
             Text(
                 HkTime.displayDate(date),
@@ -462,10 +489,13 @@ private fun DateHeader(
                 fontWeight = FontWeight.Black,
                 color = WebInk,
             )
-            TextButton(onClick = onNext, modifier = Modifier.size(width = 44.dp, height = 50.dp)) {
-                Text("›", fontSize = 31.sp, color = Color(0xFFDAD0D9))
+            TextButton(onClick = onNext, modifier = Modifier.size(width = 40.dp, height = 50.dp)) {
+                Text("›", fontSize = 31.sp, color = WebMuted)
             }
-            TextButton(onClick = onSettings, modifier = Modifier.size(width = 46.dp, height = 50.dp)) {
+            TextButton(onClick = onHistory, modifier = Modifier.size(width = 58.dp, height = 50.dp)) {
+                Text("Chart", fontSize = 10.sp, fontWeight = FontWeight.Black, color = WebAccent2)
+            }
+            TextButton(onClick = onSettings, modifier = Modifier.size(width = 44.dp, height = 50.dp)) {
                 Text("⚙", fontSize = 18.sp, color = WebAccent)
             }
         }
@@ -486,16 +516,16 @@ private fun EtaPanel(mode: CommuteMode, snapshot: EtaSnapshot, now: Long, tracki
     val remarks = snapshot.routes.values.flatten().map { it.remark.trim() }.filter { it.isNotBlank() }.distinct().take(2)
 
     ColorGradientCard(
-        colors = listOf(Color(0xFF2A1828), Color(0xFF17131B), Color(0xFF142326)),
-        border = Color(0xFF51304A),
+        colors = listOf(Color(0xFF241724), WebCard2, Color(0xFF132522)),
+        border = Color(0xFF4A3446),
         shape = RoundedCornerShape(21.dp),
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(station, fontSize = 12.sp, color = Color(0xFFE2D6E0), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text(station, fontSize = 12.sp, color = WebInk, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 if (tracking) {
                     Surface(shape = RoundedCornerShape(99.dp), color = WebBusSoft, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2C5E59))) {
-                        Text("LIVE", fontSize = 9.sp, fontWeight = FontWeight.Black, color = Color(0xFFA5F5E9), modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                        Text("LIVE", fontSize = 9.sp, fontWeight = FontWeight.Black, color = Color(0xFFC6FFF5), modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                     }
                 }
             }
@@ -505,7 +535,7 @@ private fun EtaPanel(mode: CommuteMode, snapshot: EtaSnapshot, now: Long, tracki
             EtaLine("42C", snapshot, now)
             if (remarks.isNotEmpty()) {
                 Spacer(Modifier.height(7.dp))
-                remarks.forEach { Text("• $it", fontSize = 9.sp, lineHeight = 13.sp, color = Color(0xFFFFB7D8)) }
+                remarks.forEach { Text("• $it", fontSize = 9.sp, lineHeight = 13.sp, color = Color(0xFFFFB8D4)) }
             }
             Spacer(Modifier.height(7.dp))
             Text(
@@ -531,7 +561,7 @@ private fun EtaLine(route: String, snapshot: EtaSnapshot, now: Long) {
             if (arrivals.isEmpty()) "—" else arrivals.joinToString("   ") { etaCountdown(it.timestamp, now) },
             fontSize = 27.sp,
             fontWeight = FontWeight.Black,
-            color = Color(0xFFD0FFF8),
+            color = Color(0xFFD2FFF8),
             maxLines = 1,
         )
     }
@@ -608,7 +638,7 @@ private fun ActionTile(text: String, modifier: Modifier, feedback: String?, onCl
     PressableTile(
         modifier = modifier.height(86.dp),
         shape = RoundedCornerShape(20.dp),
-        colors = listOf(Color(0xFF221A25), WebCard),
+        colors = listOf(Color(0xFF1D2230), WebCard),
         border = WebLine,
         onClick = onClick,
         onLongClick = onLongClick,
@@ -625,15 +655,15 @@ private fun StopTile(feedback: String?, onClick: () -> Unit, onLongClick: () -> 
     PressableTile(
         modifier = Modifier.fillMaxWidth().height(70.dp),
         shape = RoundedCornerShape(19.dp),
-        colors = listOf(Color(0xFF55203F), Color(0xFF35203B), Color(0xFF242033)),
-        border = Color(0xFF8C4671),
+        colors = listOf(Color(0xFF3A1B2B), Color(0xFF282033), WebCard2),
+        border = Color(0xFF74415B),
         onClick = onClick,
         onLongClick = onLongClick,
     ) {
         Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("到巴士站", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFFFFC6E0))
-                Text("開始計等車時間", fontSize = 10.sp, color = Color(0xFFD99AB8))
+                Text("到巴士站", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFFFFD8E8))
+                Text("開始計等車時間", fontSize = 10.sp, color = Color(0xFFCAA2B5))
             }
             if (feedback != null) Text(feedback, fontSize = 11.sp, color = WebGood, fontWeight = FontWeight.Bold)
         }
@@ -645,14 +675,14 @@ private fun BusTile(text: String, modifier: Modifier, feedback: String?, onClick
     PressableTile(
         modifier = modifier.height(98.dp),
         shape = RoundedCornerShape(20.dp),
-        colors = listOf(Color(0xFF1A3B3A), Color(0xFF142A2B)),
-        border = Color(0xFF2E605C),
+        colors = listOf(Color(0xFF18342F), WebBusSoft),
+        border = Color(0xFF35655E),
         onClick = onClick,
         onLongClick = onLongClick,
     ) {
         Column(Modifier.fillMaxSize().padding(horizontal = 15.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
-            Text(text, fontSize = 32.sp, fontWeight = FontWeight.Black, color = Color(0xFFA5F5E9))
-            Text(feedback ?: "上車", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (feedback != null) WebGood else Color(0xFF77CBBF))
+            Text(text, fontSize = 32.sp, fontWeight = FontWeight.Black, color = Color(0xFFC6FFF5))
+            Text(feedback ?: "上車", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (feedback != null) WebGood else Color(0xFF8FCFC5))
         }
     }
 }
@@ -662,9 +692,9 @@ private enum class UtilityStyle { Warm, Accent, Neutral }
 @Composable
 private fun SmallAction(text: String, modifier: Modifier, style: UtilityStyle, onClick: () -> Unit) {
     val (bg, fg, border) = when (style) {
-        UtilityStyle.Warm -> Triple(WebWarmSoft, Color(0xFFFFD38E), Color(0xFF5A4425))
-        UtilityStyle.Accent -> Triple(WebAccentSoft, Color(0xFFFFB8D9), Color(0xFF70405C))
-        UtilityStyle.Neutral -> Triple(WebCard, Color(0xFFBFB4BF), WebLine)
+        UtilityStyle.Warm -> Triple(WebWarmSoft, Color(0xFFF9D995), Color(0xFF5B4C29))
+        UtilityStyle.Accent -> Triple(WebAccentSoft, Color(0xFFFFD8E8), Color(0xFF70405C))
+        UtilityStyle.Neutral -> Triple(WebCard, WebMuted, WebLine)
     }
     Surface(onClick = onClick, modifier = modifier.height(43.dp), shape = RoundedCornerShape(13.dp), color = bg, border = androidx.compose.foundation.BorderStroke(1.dp, border)) {
         Box(contentAlignment = Alignment.Center) { Text(text, fontSize = 12.sp, fontWeight = FontWeight.Black, color = fg) }
@@ -684,8 +714,8 @@ private fun SmartNextBar(
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).shadow(12.dp, RoundedCornerShape(22.dp)),
         shape = RoundedCornerShape(22.dp),
-        color = Color(0xF21A121B),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF56334B)),
+        color = Color(0xF2141821),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4C3448)),
     ) {
         if (viewedDate != today) {
             SmartButton("返回今日", Modifier.fillMaxWidth().padding(8.dp), onReturnToday)
@@ -713,7 +743,7 @@ private fun SmartButton(text: String, modifier: Modifier, onClick: () -> Unit) {
             .height(62.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(17.dp))
-            .background(Brush.horizontalGradient(listOf(Color(0xFFFF6FB5), Color(0xFFBE65E5))))
+            .background(Brush.horizontalGradient(listOf(WebAccent, WebAccent2)))
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
@@ -721,7 +751,7 @@ private fun SmartButton(text: String, modifier: Modifier, onClick: () -> Unit) {
                 onLongClick = {},
             ),
         contentAlignment = Alignment.Center,
-    ) { Text(text, color = Color(0xFF2B1020), fontWeight = FontWeight.Black, fontSize = 17.sp) }
+    ) { Text(text, color = Color(0xFF220C1B), fontWeight = FontWeight.Black, fontSize = 17.sp) }
 }
 
 @Composable
@@ -777,7 +807,7 @@ private fun TimelineRow(event: RecorderEvent, duration: String, showSeconds: Boo
         }
         Spacer(Modifier.width(8.dp))
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(event.label, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(event.label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = WebInk, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (event.auto) {
                 Spacer(Modifier.width(5.dp))
                 Surface(shape = RoundedCornerShape(99.dp), color = Color.Transparent, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF5A4153))) {
@@ -789,7 +819,7 @@ private fun TimelineRow(event: RecorderEvent, duration: String, showSeconds: Boo
             duration,
             fontSize = 11.sp,
             fontWeight = if (event.terminal) FontWeight.Black else FontWeight.Medium,
-            color = if (event.terminal) WebAccent2 else Color(0xFFC0B6C1),
+            color = if (event.terminal) WebAccent2 else WebMuted,
             textAlign = TextAlign.End,
         )
     }
@@ -802,26 +832,44 @@ private fun durationLabel(event: RecorderEvent, next: RecorderEvent?, viewedDate
 }
 
 @Composable
-private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate) {
+private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate, completedFirst: Boolean) {
     val summary = RecorderAnalytics.daySummary(events, date)
     ColorGradientCard(
         modifier = Modifier.fillMaxWidth(),
-        colors = listOf(Color(0xFF201525), Color(0xFF15151C)),
-        border = Color(0xFF493047),
+        colors = listOf(Color(0xFF241722), WebCard2, WebCard),
+        border = Color(0xFF493244),
         shape = RoundedCornerShape(18.dp),
     ) {
         Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Today Summary", fontWeight = FontWeight.Black, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Text(
+                    when {
+                        completedFirst -> "今日完成"
+                        summary.complete -> "Day Summary"
+                        else -> "Today Summary"
+                    },
+                    fontWeight = FontWeight.Black,
+                    fontSize = 14.sp,
+                    color = WebInk,
+                    modifier = Modifier.weight(1f),
+                )
                 if (summary.complete) Text("✓ 完成", color = WebGood, fontSize = 10.sp, fontWeight = FontWeight.Black)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SummaryMetric("等車", HkTime.formatDuration(summary.waitMs), WebAccent, Modifier.weight(1f))
-                SummaryMetric("巴士", HkTime.formatDuration(summary.busMs), WebBus, Modifier.weight(1f))
+                SummaryMetric("等車", HkTime.formatDurationReadable(summary.waitMs), WebAccent, Modifier.weight(1f))
+                SummaryMetric("巴士車程", HkTime.formatDurationReadable(summary.busMs), WebBus, Modifier.weight(1f))
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SummaryMetric("返工", summary.workMs?.let(HkTime::formatDuration) ?: "—", WebAccent2, Modifier.weight(1f))
-                SummaryMetric("放工返屋企", summary.homeMs?.let(HkTime::formatDuration) ?: "—", WebWarm, Modifier.weight(1f))
+                SummaryMetric("工作時間", summary.workMs?.let(HkTime::formatDurationReadable) ?: "—", WebAccent2, Modifier.weight(1f))
+                SummaryMetric("放工返屋企", summary.homeMs?.let(HkTime::formatDurationReadable) ?: "—", WebWarm, Modifier.weight(1f))
+            }
+            if (summary.complete) {
+                Text(
+                    "工作時間 = 到公司 → 放工；放工返屋企 = 放工 → 到屋企",
+                    fontSize = 9.sp,
+                    lineHeight = 13.sp,
+                    color = WebDim,
+                )
             }
         }
     }
@@ -829,10 +877,16 @@ private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate) {
 
 @Composable
 private fun SummaryMetric(label: String, value: String, color: Color, modifier: Modifier) {
-    Surface(modifier, shape = RoundedCornerShape(13.dp), color = Color(0xFF120F15), border = androidx.compose.foundation.BorderStroke(1.dp, WebLine)) {
+    Surface(
+        modifier,
+        shape = RoundedCornerShape(13.dp),
+        color = Color(0xFF10131A),
+        contentColor = WebInk,
+        border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
+    ) {
         Column(Modifier.padding(9.dp)) {
             Text(label, fontSize = 9.sp, color = WebMuted, fontWeight = FontWeight.Bold)
-            Text(value, fontSize = 16.sp, color = color, fontWeight = FontWeight.Black)
+            Text(value, fontSize = 15.sp, color = color, fontWeight = FontWeight.Black, maxLines = 1)
         }
     }
 }
@@ -849,7 +903,7 @@ private fun SettingsDrawer(
 ) {
     ModalDrawerSheet(
         modifier = Modifier.fillMaxWidth(0.86f),
-        drawerContainerColor = Color(0xFF121017),
+        drawerContainerColor = Color(0xFF10131A),
         drawerContentColor = WebInk,
     ) {
         Column(
@@ -859,14 +913,14 @@ private fun SettingsDrawer(
             Text("Settings", fontSize = 21.sp, fontWeight = FontWeight.Black, color = WebAccent)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("顯示秒數", fontWeight = FontWeight.Bold)
+                    Text("顯示秒數", fontWeight = FontWeight.Bold, color = WebInk)
                     Text("Timestamp 會一直保存到秒", fontSize = 10.sp, color = WebMuted)
                 }
                 Switch(checked = state.settings.showSeconds, onCheckedChange = onSeconds)
             }
             HorizontalDivider(color = WebLine)
             Text("ETA", fontSize = 11.sp, color = WebMuted, fontWeight = FontWeight.Black)
-            Text("返工：德福花園\n放工：屏麗徑南行\n38 / 42C · 政府 / KMB raw ETA · 60 秒 tracking", fontSize = 12.sp, lineHeight = 19.sp, color = Color(0xFFE0D5DF))
+            Text("返工：德福花園\n放工：屏麗徑南行\n38 / 42C · 政府 / KMB raw ETA · 60 秒 tracking", fontSize = 12.sp, lineHeight = 19.sp, color = WebInk)
             Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = Color(0xFFA5F5E9))) {
                 Text("立即更新 ETA", fontWeight = FontWeight.Bold)
             }
@@ -882,13 +936,13 @@ private fun SettingsDrawer(
             Text("Backup 係 JSON，可用嚟完整 Restore；暫時唔做 CSV。", fontSize = 10.sp, color = WebMuted)
             HorizontalDivider(color = WebLine)
             Text("Widget", fontSize = 11.sp, color = WebMuted, fontWeight = FontWeight.Black)
-            Text("長按 Android 主畫面 → Widgets → Time Recorder。Widget 有 Smart Next Action、38 / 42C 同 cached ETA。", fontSize = 11.sp, lineHeight = 17.sp, color = Color(0xFFD6CBD5))
+            Text("長按 Android 主畫面 → Widgets → Time Recorder。Widget 有 Smart Next Action、38 / 42C 同 cached ETA。", fontSize = 11.sp, lineHeight = 17.sp, color = WebMuted)
             if (state.tracking.active) {
                 OutlinedButton(onClick = onStopTracking, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebDanger)) {
                     Text("停止 ETA Tracking")
                 }
             }
-            Text("左邊緣向右 Swipe 或右上角 ⚙ 可打開 Settings。", fontSize = 10.sp, color = WebMuted)
+            Text("用右上角 ⚙ 打開 Settings；左邊緣保留畀 Android Back gesture。", fontSize = 10.sp, color = WebMuted)
         }
     }
 }
@@ -904,7 +958,7 @@ private fun EntryActionsDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(event.label) },
+        title = { Text(event.label, color = WebInk) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (event.kind == EventKind.BUS) {
@@ -928,7 +982,7 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onSave: (String
     var name by remember(initial) { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("改名稱") },
+        title = { Text("改名稱", color = WebInk) },
         text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true) },
         confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onSave(name.trim()) }) { Text("儲存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
@@ -943,7 +997,7 @@ private fun BackfillDialog(onDismiss: () -> Unit, onSelect: (String, EventKind, 
     )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("補記") },
+        title = { Text("補記", color = WebInk) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 entries.forEach { e ->
@@ -970,7 +1024,12 @@ private fun BusHistoryDialog(state: RecorderState, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Bus History / Pattern", fontWeight = FontWeight.Black) },
+        modifier = Modifier.fillMaxWidth(0.94f),
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        containerColor = WebCard2,
+        titleContentColor = WebInk,
+        textContentColor = WebInk,
+        title = { Text("History / Charts", fontWeight = FontWeight.Black, color = WebInk) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1000,7 +1059,7 @@ private fun BusHistoryDialog(state: RecorderState, onDismiss: () -> Unit) {
                 }
                 val wait = RecorderAnalytics.waitSamples(state.events, mode)
                 if (wait.isNotEmpty()) {
-                    Text("等車 median ${HkTime.formatDuration(RecorderAnalytics.medianLong(wait))} · ${wait.size} samples", fontSize = 10.sp, color = WebMuted)
+                    Text("等車 median ${HkTime.formatDurationReadable(RecorderAnalytics.medianLong(wait))} · ${wait.size} samples", fontSize = 10.sp, color = WebMuted)
                 }
             }
         },
@@ -1013,10 +1072,10 @@ private fun SelectPill(text: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(99.dp),
-        color = if (selected) WebAccentSoft else Color(0xFF151218),
+        color = if (selected) WebAccentSoft else WebCard,
         border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) WebAccent else WebLine),
     ) {
-        Text(text, modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = if (selected) Color(0xFFFFB8D9) else WebMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Text(text, modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = if (selected) Color(0xFFFFD8E8) else WebMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1030,7 +1089,7 @@ private fun JourneyHistory(samples: List<com.quickstamp.timerecorder.model.Journ
     val median = RecorderAnalytics.medianLong(durations)
     val q1 = RecorderAnalytics.percentileLong(durations, 0.25)
     val q3 = RecorderAnalytics.percentileLong(durations, 0.75)
-    Text("Median ${HkTime.formatDuration(median)} · typical ${HkTime.formatDuration(q1)}–${HkTime.formatDuration(q3)} · ${samples.size} trips", fontSize = 11.sp, color = Color(0xFFE0D5DF))
+    Text("Median ${HkTime.formatDurationReadable(median)} · typical ${HkTime.formatDurationReadable(q1)}–${HkTime.formatDurationReadable(q3)} · ${samples.size} trips", fontSize = 11.sp, color = WebInk)
     TrendChart(
         values = samples.takeLast(30).map { (it.durationMs / 1000f / 60f) },
         color = WebBus,
@@ -1049,7 +1108,7 @@ private fun BoardingHistory(events: List<RecorderEvent>) {
     }
     val values = events.map { HkTime.minuteOfDay(it.timestamp).toDouble() }
     val median = RecorderAnalytics.medianDouble(values)
-    Text("Typical ${HkTime.formatMinuteOfDay(median)} · ${events.size} boardings", fontSize = 11.sp, color = Color(0xFFE0D5DF))
+    Text("Typical ${HkTime.formatMinuteOfDay(median)} · ${events.size} boardings", fontSize = 11.sp, color = WebInk)
     val last = events.takeLast(30)
     TrendChart(
         values = last.map { HkTime.minuteOfDay(it.timestamp).toFloat() },
@@ -1115,7 +1174,7 @@ private fun WeekdayRows(value: (DayOfWeek) -> String) {
     val days = listOf(DayOfWeek.MONDAY to "Mon", DayOfWeek.TUESDAY to "Tue", DayOfWeek.WEDNESDAY to "Wed", DayOfWeek.THURSDAY to "Thu", DayOfWeek.FRIDAY to "Fri")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         days.forEach { (day, label) ->
-            Surface(Modifier.weight(1f), shape = RoundedCornerShape(10.dp), color = Color(0xFF151218), border = androidx.compose.foundation.BorderStroke(1.dp, WebLine)) {
+            Surface(Modifier.weight(1f), shape = RoundedCornerShape(10.dp), color = WebCard, border = androidx.compose.foundation.BorderStroke(1.dp, WebLine)) {
                 Column(Modifier.padding(vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(label, fontSize = 8.sp, color = WebMuted)
                     Text(value(day), fontSize = 9.sp, fontWeight = FontWeight.Black, color = WebInk, maxLines = 1)

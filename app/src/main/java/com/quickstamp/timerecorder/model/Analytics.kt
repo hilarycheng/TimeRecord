@@ -57,7 +57,9 @@ object RecorderAnalytics {
         return DaySummary(
             waitMs = wait,
             busMs = bus,
-            workMs = segment("返工", setOf("到公司")),
+            // Work duration is time actually at work: clock-out minus arrival at company.
+            workMs = segment("到公司", setOf("放工")),
+            // Home commute is clock-out to arrival home.
             homeMs = segment("放工", setOf("到屋企")),
             complete = day.any { it.terminal },
         )
