@@ -8,7 +8,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-enum class EventKind { DEFAULT, BUS, EXTRA }
+enum class EventKind { DEFAULT, STOP, BUS, EXTRA }
 enum class CommuteMode { WORK, HOME }
 
 data class RecorderEvent(
@@ -50,7 +50,7 @@ data class EtaStops(
 )
 
 data class RecorderSettings(
-    val showSeconds: Boolean = false,
+    val showSeconds: Boolean = true,
     val morningCutoffHour: Int = 10,
 )
 
@@ -71,11 +71,8 @@ object HkTime {
     private val timeSecond = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ENGLISH)
 
     fun now(): Long = System.currentTimeMillis()
-
     fun date(timestamp: Long): LocalDate = Instant.ofEpochMilli(timestamp).atZone(zone).toLocalDate()
-
     fun today(now: Long = now()): LocalDate = date(now)
-
     fun dayKey(timestamp: Long): String = date(timestamp).format(dayFormatter)
 
     fun displayDate(date: LocalDate, today: LocalDate = today()): String = when (date) {
@@ -84,7 +81,9 @@ object HkTime {
         else -> date.format(dateDisplay)
     }
 
-    fun formatTime(timestamp: Long, seconds: Boolean): String {
+    fun formatDateShort(date: LocalDate): String = date.format(DateTimeFormatter.ofPattern("d/M", Locale.ENGLISH))
+
+    fun formatTime(timestamp: Long, seconds: Boolean = true): String {
         val z = Instant.ofEpochMilli(timestamp).atZone(zone)
         return z.format(if (seconds) timeSecond else timeMinute)
     }
@@ -97,20 +96,27 @@ object HkTime {
         return if (hour < cutoffHour) CommuteMode.WORK else CommuteMode.HOME
     }
 
+    /** User-recorded durations are deliberately second-accurate. */
     fun formatDuration(milliseconds: Long): String {
         val totalSeconds = (milliseconds.coerceAtLeast(0L) / 1000L)
         val hours = totalSeconds / 3600
         val minutes = (totalSeconds % 3600) / 60
-        return when {
-            hours > 0 -> "${hours}h ${minutes}m"
-            minutes > 0 -> "${minutes}m"
-            else -> "<1m"
+        val seconds = totalSeconds % 60
+        return if (hours > 0) {
+            "%d:%02d:%02d".format(Locale.ENGLISH, hours, minutes, seconds)
+        } else {
+            "%02d:%02d".format(Locale.ENGLISH, minutes, seconds)
         }
     }
 
     fun minuteOfDay(timestamp: Long): Int {
         val z = Instant.ofEpochMilli(timestamp).atZone(zone)
         return z.hour * 60 + z.minute
+    }
+
+    fun secondOfDay(timestamp: Long): Int {
+        val z = Instant.ofEpochMilli(timestamp).atZone(zone)
+        return z.hour * 3600 + z.minute * 60 + z.second
     }
 
     fun formatMinuteOfDay(value: Double): String {

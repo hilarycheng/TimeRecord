@@ -158,7 +158,8 @@ class EtaForegroundService : Service() {
         }
 
         fun stop(context: Context) {
-            context.startService(Intent(context, EtaForegroundService::class.java).apply { action = ACTION_STOP })
+            AppStore.setTracking(context.applicationContext, false)
+            context.stopService(Intent(context, EtaForegroundService::class.java))
         }
     }
 }

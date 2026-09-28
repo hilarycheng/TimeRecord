@@ -134,6 +134,25 @@ object AppStore {
         }
     }
 
+
+    fun exportJson(context: Context): String = synchronized(lock) {
+        stateToJson(parseState(prefs(context).getString(KEY_STATE, null))).toString(2)
+    }
+
+    fun restoreJson(context: Context, raw: String): Result<RecorderState> = synchronized(lock) {
+        runCatching {
+            val parsed = parseStateStrict(raw)
+            persist(context, parsed)
+            parsed
+        }
+    }
+
+    private fun parseStateStrict(raw: String): RecorderState {
+        val root = JSONObject(raw)
+        require(root.has("events")) { "Backup missing events" }
+        return parseState(root.toString())
+    }
+
     fun autoClosePastDays(context: Context, now: Long = HkTime.now()) {
         val today = HkTime.today(now)
         mutate(context) { state ->
@@ -146,6 +165,7 @@ object AppStore {
                         timestamp = HkTime.at(date, 18, 0, 0),
                         label = "到屋企",
                         kind = EventKind.DEFAULT,
+                        commute = CommuteMode.HOME,
                         terminal = true,
                         auto = true,
                     )
@@ -193,7 +213,7 @@ object AppStore {
             RecorderState(
                 events = events.sortedBy { it.timestamp },
                 settings = RecorderSettings(
-                    showSeconds = settingsJson.optBoolean("showSeconds", false),
+                    showSeconds = settingsJson.optBoolean("showSeconds", true),
                     morningCutoffHour = settingsJson.optInt("morningCutoffHour", 10).coerceIn(0, 23),
                 ),
                 etaWork = parseSnapshot(root.optJSONObject("etaWork")),

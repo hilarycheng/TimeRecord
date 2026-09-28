@@ -5,14 +5,19 @@ package com.quickstamp.timerecorder.ui
 import android.Manifest
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,11 +41,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -63,27 +71,39 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.quickstamp.timerecorder.data.AppStore
+import com.quickstamp.timerecorder.data.RecorderActions
 import com.quickstamp.timerecorder.model.CommuteMode
 import com.quickstamp.timerecorder.model.EtaSnapshot
 import com.quickstamp.timerecorder.model.EventKind
 import com.quickstamp.timerecorder.model.HkTime
+import com.quickstamp.timerecorder.model.NextAction
+import com.quickstamp.timerecorder.model.RecorderAnalytics
 import com.quickstamp.timerecorder.model.RecorderEvent
 import com.quickstamp.timerecorder.model.RecorderState
+import com.quickstamp.timerecorder.model.WorkflowAction
+import com.quickstamp.timerecorder.model.WorkflowPlanner
 import com.quickstamp.timerecorder.network.KmbEtaClient
 import com.quickstamp.timerecorder.service.EtaForegroundService
+import com.quickstamp.timerecorder.widget.TimeRecorderWidgetProvider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.util.concurrent.Executors
 import kotlin.math.ceil
+
+private data class TapFeedback(val key: String, val text: String, val timestamp: Long)
+private enum class HistoryMetric { JOURNEY, BOARDING }
 
 @Composable
 fun TimeRecorderApp() {
@@ -96,19 +116,49 @@ fun TimeRecorderApp() {
     var renameTarget by remember { mutableStateOf<RecorderEvent?>(null) }
     var historyOpen by remember { mutableStateOf(false) }
     var backfillOpen by remember { mutableStateOf(false) }
+    var feedback by remember { mutableStateOf<TapFeedback?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val io = remember { Executors.newSingleThreadExecutor() }
+    val snackbar = remember { SnackbarHostState() }
 
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-
-    DisposableEffect(Unit) {
-        onDispose { io.shutdownNow() }
+    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(AppStore.exportJson(context)) }
+                    ?: error("Cannot open backup file")
+            }.onSuccess {
+                scope.launch { snackbar.showSnackbar("Backup 已儲存", duration = SnackbarDuration.Short) }
+            }.onFailure {
+                scope.launch { snackbar.showSnackbar("Backup 失敗：${it.message}", duration = SnackbarDuration.Short) }
+            }
+        }
     }
+    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val result = runCatching {
+                val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("Cannot read backup")
+                AppStore.restoreJson(context, raw).getOrThrow()
+            }
+            result.onSuccess {
+                state = AppStore.load(context)
+                lastVersion = AppStore.version(context)
+                runCatching { TimeRecorderWidgetProvider.updateAll(context) }
+                scope.launch { snackbar.showSnackbar("Restore 完成", duration = SnackbarDuration.Short) }
+            }.onFailure {
+                scope.launch { snackbar.showSnackbar("Restore 失敗：${it.message}", duration = SnackbarDuration.Short) }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) { onDispose { io.shutdownNow() } }
 
     fun reload() {
         state = AppStore.load(context)
         lastVersion = AppStore.version(context)
+        runCatching { TimeRecorderWidgetProvider.updateAll(context) }
     }
 
     fun refreshEta(mode: CommuteMode) {
@@ -129,24 +179,34 @@ fun TimeRecorderApp() {
         timestamp: Long = HkTime.now(),
         manual: Boolean = false,
     ) {
-        val commute = when {
-            kind == EventKind.BUS -> state.tracking.mode ?: HkTime.modeAt(timestamp, state.settings.morningCutoffHour)
-            else -> null
-        }
-        AppStore.record(context, label, kind, timestamp, route, commute, terminal)
-        when {
-            !manual && label == "返工" -> {
-                ensureNotificationPermission()
-                runCatching { EtaForegroundService.start(context, CommuteMode.WORK) }
-            }
-            !manual && label == "放工" -> {
-                ensureNotificationPermission()
-                runCatching { EtaForegroundService.start(context, CommuteMode.HOME) }
-            }
-            !manual && kind == EventKind.BUS -> runCatching { EtaForegroundService.stop(context) }
-            !manual && terminal -> runCatching { EtaForegroundService.stop(context) }
-        }
+        if (!manual && (label == "返工" || label == "放工")) ensureNotificationPermission()
+        val result = RecorderActions.record(context, label, kind, route, terminal, timestamp, manual)
         reload()
+        feedback = TapFeedback(route ?: label, "✓ ${HkTime.formatTime(timestamp, true)}", timestamp)
+        scope.launch {
+            val snackResult = snackbar.showSnackbar(
+                message = "已記錄：${route?.let { "上 $it" } ?: label} · ${HkTime.formatTime(timestamp, true)}",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Short,
+            )
+            if (snackResult == SnackbarResult.ActionPerformed) {
+                AppStore.deleteEvent(context, result.event.id)
+                result.autoStop?.let { AppStore.deleteEvent(context, it.id) }
+                if (kind == EventKind.BUS) {
+                    result.event.commute?.let { runCatching { EtaForegroundService.start(context, it) } }
+                } else if (label == "返工" || label == "放工") {
+                    runCatching { EtaForegroundService.stop(context) }
+                }
+                reload()
+            }
+        }
+    }
+
+    LaunchedEffect(feedback?.timestamp) {
+        if (feedback != null) {
+            delay(1_600L)
+            feedback = null
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -181,6 +241,14 @@ fun TimeRecorderApp() {
                     scope.launch { drawerState.close() }
                 },
                 onHistory = { historyOpen = true; scope.launch { drawerState.close() } },
+                onBackup = {
+                    backupLauncher.launch("time-recorder-backup-${HkTime.today()}.json")
+                    scope.launch { drawerState.close() }
+                },
+                onRestore = {
+                    restoreLauncher.launch(arrayOf("application/json", "text/plain"))
+                    scope.launch { drawerState.close() }
+                },
                 onStopTracking = {
                     EtaForegroundService.stop(context)
                     reload()
@@ -191,98 +259,133 @@ fun TimeRecorderApp() {
         val mode = state.tracking.mode ?: HkTime.modeAt(now, state.settings.morningCutoffHour)
         val snapshot = if (mode == CommuteMode.WORK) state.etaWork else state.etaHome
         val events = state.events.filter { HkTime.date(it.timestamp) == viewedDate }.sortedBy { it.timestamp }
+        val next = WorkflowPlanner.next(state.events, viewedDate, now)
 
-        LazyColumn(
-            modifier = Modifier
+        Box(
+            Modifier
                 .fillMaxSize()
                 .background(WebBg)
                 .statusBarsPadding()
-                .navigationBarsPadding(),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp),
+                .navigationBarsPadding()
         ) {
-            item {
-                DateHeader(
-                    date = viewedDate,
-                    onPrevious = { viewedDate = viewedDate.minusDays(1) },
-                    onNext = { if (viewedDate < HkTime.today(now)) viewedDate = viewedDate.plusDays(1) },
-                    onPickDate = { showDatePicker(context, viewedDate) { viewedDate = it } },
-                )
-            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 112.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                item {
+                    DateHeader(
+                        date = viewedDate,
+                        onPrevious = { viewedDate = viewedDate.minusDays(1) },
+                        onNext = { if (viewedDate < HkTime.today(now)) viewedDate = viewedDate.plusDays(1) },
+                        onPickDate = { showDatePicker(context, viewedDate) { viewedDate = it } },
+                        onSettings = { scope.launch { drawerState.open() } },
+                    )
+                }
 
-            item { EtaPanel(mode = mode, snapshot = snapshot, now = now, tracking = state.tracking.active) }
+                item { EtaPanel(mode = mode, snapshot = snapshot, now = now, tracking = state.tracking.active) }
 
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    ActionTile("返工", Modifier.weight(1f), onClick = { recordAction("返工") }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("返工", timestamp = it, manual = true) }
-                    })
-                    ActionTile("放工", Modifier.weight(1f), onClick = { recordAction("放工") }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("放工", timestamp = it, manual = true) }
-                    })
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        ActionTile("返工", Modifier.weight(1f), feedback = feedbackFor(feedback, "返工"), onClick = { recordAction("返工") }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("返工", timestamp = it, manual = true) }
+                        })
+                        ActionTile("放工", Modifier.weight(1f), feedback = feedbackFor(feedback, "放工"), onClick = { recordAction("放工") }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("放工", timestamp = it, manual = true) }
+                        })
+                    }
+                }
+
+                item {
+                    StopTile(
+                        feedback = feedbackFor(feedback, "到巴士站"),
+                        onClick = { recordAction("到巴士站", EventKind.STOP) },
+                        onLongClick = { showTimePicker(context, viewedDate, now) { recordAction("到巴士站", EventKind.STOP, timestamp = it, manual = true) } },
+                    )
+                }
+
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        BusTile("38", Modifier.weight(1f), feedback = feedbackFor(feedback, "38"), onClick = { recordAction("上 38", EventKind.BUS, "38") }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("上 38", EventKind.BUS, "38", timestamp = it, manual = true) }
+                        })
+                        BusTile("42C", Modifier.weight(1f), feedback = feedbackFor(feedback, "42C"), onClick = { recordAction("上 42C", EventKind.BUS, "42C") }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("上 42C", EventKind.BUS, "42C", timestamp = it, manual = true) }
+                        })
+                    }
+                }
+
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        ActionTile("到餐廳", Modifier.weight(1f), feedback = feedbackFor(feedback, "到餐廳"), onClick = { recordAction("到餐廳") }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("到餐廳", timestamp = it, manual = true) }
+                        })
+                        ActionTile("到公司", Modifier.weight(1f), feedback = feedbackFor(feedback, "到公司"), onClick = { recordAction("到公司") }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("到公司", timestamp = it, manual = true) }
+                        })
+                    }
+                }
+
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        ActionTile("落車", Modifier.weight(1f), feedback = feedbackFor(feedback, "落車"), onClick = { recordAction("落車") }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("落車", timestamp = it, manual = true) }
+                        })
+                        ActionTile("到屋企", Modifier.weight(1f), feedback = feedbackFor(feedback, "到屋企"), onClick = { recordAction("到屋企", terminal = true) }, onLongClick = {
+                            showTimePicker(context, viewedDate, now) { recordAction("到屋企", terminal = true, timestamp = it, manual = true) }
+                        })
+                    }
+                }
+
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SmallAction("其他事", Modifier.weight(1f), UtilityStyle.Warm) { recordAction("其他事", EventKind.EXTRA) }
+                        SmallAction("補記", Modifier.weight(1f), UtilityStyle.Accent) { backfillOpen = true }
+                        SmallAction("Undo", Modifier.weight(0.72f), UtilityStyle.Neutral) { AppStore.undo(context, viewedDate); reload() }
+                    }
+                }
+
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 2.dp),
+                        verticalAlignment = Alignment.Bottom,
+                    ) {
+                        Text("Timeline", fontSize = 14.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                        Text("長按可修改", fontSize = 10.sp, color = WebMuted)
+                    }
+                }
+
+                item {
+                    TimelineCard(
+                        events = events,
+                        viewedDate = viewedDate,
+                        now = now,
+                        showSeconds = state.settings.showSeconds,
+                        onLongClick = { editing = it },
+                    )
+                }
+
+                if (events.isNotEmpty()) {
+                    item { TodaySummaryCard(events, viewedDate) }
                 }
             }
 
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    BusTile("38", Modifier.weight(1f), onClick = { recordAction("上 38", EventKind.BUS, "38") }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("上 38", EventKind.BUS, "38", timestamp = it, manual = true) }
-                    })
-                    BusTile("42C", Modifier.weight(1f), onClick = { recordAction("上 42C", EventKind.BUS, "42C") }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("上 42C", EventKind.BUS, "42C", timestamp = it, manual = true) }
-                    })
-                }
-            }
+            SnackbarHost(
+                hostState = snackbar,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 12.dp, end = 12.dp, bottom = 86.dp),
+            )
 
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    ActionTile("到餐廳", Modifier.weight(1f), onClick = { recordAction("到餐廳") }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("到餐廳", timestamp = it, manual = true) }
-                    })
-                    ActionTile("到公司", Modifier.weight(1f), onClick = { recordAction("到公司") }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("到公司", timestamp = it, manual = true) }
-                    })
-                }
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    ActionTile("落車", Modifier.weight(1f), onClick = { recordAction("落車") }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("落車", timestamp = it, manual = true) }
-                    })
-                    ActionTile("到屋企", Modifier.weight(1f), onClick = { recordAction("到屋企", terminal = true) }, onLongClick = {
-                        showTimePicker(context, viewedDate, now) { recordAction("到屋企", terminal = true, timestamp = it, manual = true) }
-                    })
-                }
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SmallAction("其他事", Modifier.weight(1f), UtilityStyle.Warm) { recordAction("其他事", EventKind.EXTRA) }
-                    SmallAction("補記", Modifier.weight(1f), UtilityStyle.Accent) { backfillOpen = true }
-                    SmallAction("Undo", Modifier.weight(0.72f), UtilityStyle.Neutral) { AppStore.undo(context, viewedDate); reload() }
-                }
-            }
-
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 2.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    Text("Timeline", fontSize = 14.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
-                    Text("長按可修改", fontSize = 10.sp, color = WebMuted)
-                }
-            }
-
-            item {
-                TimelineCard(
-                    events = events,
-                    viewedDate = viewedDate,
-                    now = now,
-                    showSeconds = state.settings.showSeconds,
-                    onLongClick = { editing = it },
-                )
-            }
+            SmartNextBar(
+                next = next,
+                viewedDate = viewedDate,
+                today = HkTime.today(now),
+                onReturnToday = { viewedDate = HkTime.today(now) },
+                onAction = { a -> recordAction(a.label, a.kind, a.route, a.terminal) },
+                onBus = { route -> recordAction("上 $route", EventKind.BUS, route) },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
     }
 
@@ -296,6 +399,11 @@ fun TimeRecorderApp() {
                 showTimePicker(context, HkTime.date(event.timestamp), event.timestamp) { ts ->
                     AppStore.updateEvent(context, event.copy(timestamp = ts)); reload()
                 }
+            },
+            onRoute = { route ->
+                AppStore.updateEvent(context, event.copy(route = route, label = "上 $route"))
+                editing = null
+                reload()
             },
             onDelete = { AppStore.deleteEvent(context, event.id); editing = null; reload() },
         )
@@ -326,12 +434,15 @@ fun TimeRecorderApp() {
     }
 }
 
+private fun feedbackFor(feedback: TapFeedback?, key: String): String? = if (feedback?.key == key) feedback.text else null
+
 @Composable
 private fun DateHeader(
     date: LocalDate,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onPickDate: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -340,21 +451,22 @@ private fun DateHeader(
         border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
     ) {
         Row(Modifier.height(50.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onPrevious, modifier = Modifier.size(width = 58.dp, height = 50.dp)) {
-                Text("‹", fontSize = 31.sp, color = Color(0xFFC8CED9))
+            TextButton(onClick = onPrevious, modifier = Modifier.size(width = 52.dp, height = 50.dp)) {
+                Text("‹", fontSize = 31.sp, color = Color(0xFFDAD0D9))
             }
             Text(
                 HkTime.displayDate(date),
-                modifier = Modifier
-                    .weight(1f)
-                    .combinedClickable(onClick = {}, onLongClick = onPickDate),
+                modifier = Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onPickDate),
                 textAlign = TextAlign.Center,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Black,
-                color = Color(0xFFE7EAF0),
+                color = WebInk,
             )
-            TextButton(onClick = onNext, modifier = Modifier.size(width = 58.dp, height = 50.dp)) {
-                Text("›", fontSize = 31.sp, color = Color(0xFFC8CED9))
+            TextButton(onClick = onNext, modifier = Modifier.size(width = 44.dp, height = 50.dp)) {
+                Text("›", fontSize = 31.sp, color = Color(0xFFDAD0D9))
+            }
+            TextButton(onClick = onSettings, modifier = Modifier.size(width = 46.dp, height = 50.dp)) {
+                Text("⚙", fontSize = 18.sp, color = WebAccent)
             }
         }
     }
@@ -363,34 +475,46 @@ private fun DateHeader(
 @Composable
 private fun EtaPanel(mode: CommuteMode, snapshot: EtaSnapshot, now: Long, tracking: Boolean) {
     val station = if (mode == CommuteMode.WORK) "德福花園 · 返工" else "屏麗徑南行 · 放工"
+    val age = if (snapshot.updatedAt > 0L) (now - snapshot.updatedAt).coerceAtLeast(0L) else 0L
     val status = when {
-        snapshot.refreshingStartedAt > 0L -> "Refreshing…"
-        snapshot.errorAt > snapshot.updatedAt -> "Stale · ${snapshot.errorMessage ?: "更新失敗"}"
-        snapshot.updatedAt > 0L -> "Updated ${HkTime.formatTime(snapshot.updatedAt, false)}"
+        snapshot.refreshingStartedAt > 0L -> "Refreshing… · 顯示上一筆 cache"
+        snapshot.errorAt > snapshot.updatedAt -> "Stale · ${ageLabel(age)}"
+        snapshot.updatedAt > 0L && tracking && age <= 95_000L -> "Live · updated ${ageLabel(age)}"
+        snapshot.updatedAt > 0L -> "Updated ${ageLabel(age)}"
         else -> "未有 ETA"
     }
+    val remarks = snapshot.routes.values.flatten().map { it.remark.trim() }.filter { it.isNotBlank() }.distinct().take(2)
 
-    WebGradientCard(shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 13.dp)) {
+    ColorGradientCard(
+        colors = listOf(Color(0xFF2A1828), Color(0xFF17131B), Color(0xFF142326)),
+        border = Color(0xFF51304A),
+        shape = RoundedCornerShape(21.dp),
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(station, fontSize = 12.sp, color = Color(0xFFC9CFDA), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text(station, fontSize = 12.sp, color = Color(0xFFE2D6E0), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 if (tracking) {
-                    Surface(shape = RoundedCornerShape(99.dp), color = WebBusSoft, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF265157))) {
-                        Text("LIVE", fontSize = 9.sp, fontWeight = FontWeight.Black, color = Color(0xFF9AF1E5), modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                    Surface(shape = RoundedCornerShape(99.dp), color = WebBusSoft, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2C5E59))) {
+                        Text("LIVE", fontSize = 9.sp, fontWeight = FontWeight.Black, color = Color(0xFFA5F5E9), modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                     }
                 }
             }
             Spacer(Modifier.height(8.dp))
             EtaLine("38", snapshot, now)
-            Spacer(Modifier.height(5.dp))
+            Spacer(Modifier.height(4.dp))
             EtaLine("42C", snapshot, now)
+            if (remarks.isNotEmpty()) {
+                Spacer(Modifier.height(7.dp))
+                remarks.forEach { Text("• $it", fontSize = 9.sp, lineHeight = 13.sp, color = Color(0xFFFFB7D8)) }
+            }
             Spacer(Modifier.height(7.dp))
             Text(
                 status,
                 fontSize = 10.sp,
                 color = when {
-                    snapshot.refreshingStartedAt > 0L -> Color(0xFF9AF1E5)
-                    snapshot.errorAt > snapshot.updatedAt -> Color(0xFFFF9AAA)
+                    snapshot.refreshingStartedAt > 0L -> WebBus
+                    snapshot.errorAt > snapshot.updatedAt -> WebDanger
+                    tracking && age <= 95_000L -> WebGood
                     else -> WebMuted
                 },
             )
@@ -421,9 +545,16 @@ private fun etaCountdown(timestamp: Long, now: Long): String {
     }
 }
 
+private fun ageLabel(ms: Long): String = when {
+    ms < 60_000L -> "${ms / 1000}s ago"
+    else -> "${ms / 60_000L}m ago"
+}
+
 @Composable
-private fun WebGradientCard(
+private fun ColorGradientCard(
     modifier: Modifier = Modifier,
+    colors: List<Color>,
+    border: Color,
     shape: RoundedCornerShape,
     content: @Composable () -> Unit,
 ) {
@@ -431,40 +562,97 @@ private fun WebGradientCard(
         modifier = modifier
             .shadow(8.dp, shape, clip = false)
             .clip(shape)
-            .background(Brush.linearGradient(listOf(WebCard2, WebCard)))
-            .border(1.dp, WebLine, shape)
-    ) {
-        content()
-    }
+            .background(Brush.linearGradient(colors))
+            .border(1.dp, border, shape)
+    ) { content() }
 }
 
 @Composable
-private fun ActionTile(text: String, modifier: Modifier, onClick: () -> Unit, onLongClick: () -> Unit) {
-    val shape = RoundedCornerShape(20.dp)
-    WebGradientCard(modifier = modifier.height(88.dp).combinedClickable(onClick = onClick, onLongClick = onLongClick), shape = shape) {
-        Box(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 13.dp), contentAlignment = Alignment.CenterStart) {
+private fun PressableTile(
+    modifier: Modifier,
+    shape: RoundedCornerShape,
+    colors: List<Color>,
+    border: Color,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.965f else 1f, label = "press")
+    val view = LocalView.current
+    Box(
+        modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .shadow(if (pressed) 2.dp else 8.dp, shape, clip = false)
+            .clip(shape)
+            .background(Brush.linearGradient(colors))
+            .border(1.dp, if (pressed) WebAccent else border, shape)
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    onClick()
+                },
+                onLongClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    onLongClick()
+                },
+            )
+    ) { content() }
+}
+
+@Composable
+private fun ActionTile(text: String, modifier: Modifier, feedback: String?, onClick: () -> Unit, onLongClick: () -> Unit) {
+    PressableTile(
+        modifier = modifier.height(86.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = listOf(Color(0xFF221A25), WebCard),
+        border = WebLine,
+        onClick = onClick,
+        onLongClick = onLongClick,
+    ) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 13.dp), verticalArrangement = Arrangement.Center) {
             Text(text, fontSize = 19.sp, fontWeight = FontWeight.Black, color = WebInk)
+            if (feedback != null) Text(feedback, fontSize = 10.sp, color = WebGood, fontWeight = FontWeight.Bold)
         }
     }
 }
 
 @Composable
-private fun BusTile(text: String, modifier: Modifier, onClick: () -> Unit, onLongClick: () -> Unit) {
-    val shape = RoundedCornerShape(20.dp)
-    Box(
-        modifier = modifier
-            .height(96.dp)
-            .shadow(8.dp, shape, clip = false)
-            .clip(shape)
-            .background(Brush.linearGradient(listOf(Color(0xFF183236), Color(0xFF102326))))
-            .border(1.dp, Color(0xFF265157), shape)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 15.dp, vertical = 12.dp),
-        contentAlignment = Alignment.CenterStart,
+private fun StopTile(feedback: String?, onClick: () -> Unit, onLongClick: () -> Unit) {
+    PressableTile(
+        modifier = Modifier.fillMaxWidth().height(70.dp),
+        shape = RoundedCornerShape(19.dp),
+        colors = listOf(Color(0xFF55203F), Color(0xFF35203B), Color(0xFF242033)),
+        border = Color(0xFF8C4671),
+        onClick = onClick,
+        onLongClick = onLongClick,
     ) {
-        Column {
-            Text(text, fontSize = 31.sp, fontWeight = FontWeight.Black, color = Color(0xFFA5F5E9))
-            Text("上車", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF77CBBF))
+        Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("到巴士站", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFFFFC6E0))
+                Text("開始計等車時間", fontSize = 10.sp, color = Color(0xFFD99AB8))
+            }
+            if (feedback != null) Text(feedback, fontSize = 11.sp, color = WebGood, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun BusTile(text: String, modifier: Modifier, feedback: String?, onClick: () -> Unit, onLongClick: () -> Unit) {
+    PressableTile(
+        modifier = modifier.height(98.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = listOf(Color(0xFF1A3B3A), Color(0xFF142A2B)),
+        border = Color(0xFF2E605C),
+        onClick = onClick,
+        onLongClick = onLongClick,
+    ) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 15.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
+            Text(text, fontSize = 32.sp, fontWeight = FontWeight.Black, color = Color(0xFFA5F5E9))
+            Text(feedback ?: "上車", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (feedback != null) WebGood else Color(0xFF77CBBF))
         }
     }
 }
@@ -474,21 +662,66 @@ private enum class UtilityStyle { Warm, Accent, Neutral }
 @Composable
 private fun SmallAction(text: String, modifier: Modifier, style: UtilityStyle, onClick: () -> Unit) {
     val (bg, fg, border) = when (style) {
-        UtilityStyle.Warm -> Triple(WebWarmSoft, Color(0xFFFFD38E), Color(0xFF44351E))
-        UtilityStyle.Accent -> Triple(WebAccentSoft, Color(0xFFC9C3FF), Color(0xFF39335F))
-        UtilityStyle.Neutral -> Triple(WebCard, Color(0xFFAEB5C3), WebLine)
+        UtilityStyle.Warm -> Triple(WebWarmSoft, Color(0xFFFFD38E), Color(0xFF5A4425))
+        UtilityStyle.Accent -> Triple(WebAccentSoft, Color(0xFFFFB8D9), Color(0xFF70405C))
+        UtilityStyle.Neutral -> Triple(WebCard, Color(0xFFBFB4BF), WebLine)
     }
+    Surface(onClick = onClick, modifier = modifier.height(43.dp), shape = RoundedCornerShape(13.dp), color = bg, border = androidx.compose.foundation.BorderStroke(1.dp, border)) {
+        Box(contentAlignment = Alignment.Center) { Text(text, fontSize = 12.sp, fontWeight = FontWeight.Black, color = fg) }
+    }
+}
+
+@Composable
+private fun SmartNextBar(
+    next: NextAction,
+    viewedDate: LocalDate,
+    today: LocalDate,
+    onReturnToday: () -> Unit,
+    onAction: (WorkflowAction) -> Unit,
+    onBus: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
-        onClick = onClick,
-        modifier = modifier.height(43.dp),
-        shape = RoundedCornerShape(13.dp),
-        color = bg,
-        border = androidx.compose.foundation.BorderStroke(1.dp, border),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).shadow(12.dp, RoundedCornerShape(22.dp)),
+        shape = RoundedCornerShape(22.dp),
+        color = Color(0xF21A121B),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF56334B)),
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Text(text, fontSize = 12.sp, fontWeight = FontWeight.Black, color = fg)
+        if (viewedDate != today) {
+            SmartButton("返回今日", Modifier.fillMaxWidth().padding(8.dp), onReturnToday)
+        } else when (next) {
+            is NextAction.Single -> SmartButton("下一步 · ${next.action.label}", Modifier.fillMaxWidth().padding(8.dp)) { onAction(next.action) }
+            NextAction.BusChoices -> Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmartButton("38 上車", Modifier.weight(1f)) { onBus("38") }
+                SmartButton("42C 上車", Modifier.weight(1f)) { onBus("42C") }
+            }
+            NextAction.Done -> Box(Modifier.fillMaxWidth().height(62.dp), contentAlignment = Alignment.Center) {
+                Text("✓ 今日完成", color = WebGood, fontWeight = FontWeight.Black, fontSize = 17.sp)
+            }
         }
     }
+}
+
+@Composable
+private fun SmartButton(text: String, modifier: Modifier, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.97f else 1f, label = "smart")
+    val view = LocalView.current
+    Box(
+        modifier
+            .height(62.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(RoundedCornerShape(17.dp))
+            .background(Brush.horizontalGradient(listOf(Color(0xFFFF6FB5), Color(0xFFBE65E5))))
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = { view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); onClick() },
+                onLongClick = {},
+            ),
+        contentAlignment = Alignment.Center,
+    ) { Text(text, color = Color(0xFF2B1020), fontWeight = FontWeight.Black, fontSize = 17.sp) }
 }
 
 @Composable
@@ -506,23 +739,12 @@ private fun TimelineCard(
         border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
     ) {
         if (events.isEmpty()) {
-            Text(
-                "未有記錄",
-                color = WebMuted,
-                fontSize = 12.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
-            )
+            Text("未有記錄", color = WebMuted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp))
         } else {
             Column {
                 events.forEachIndexed { index, event ->
                     val next = events.getOrNull(index + 1)
-                    TimelineRow(
-                        event = event,
-                        duration = durationLabel(event, next, viewedDate, now),
-                        showSeconds = showSeconds,
-                        onLongClick = { onLongClick(event) },
-                    )
+                    TimelineRow(event, durationLabel(event, next, viewedDate, now), showSeconds) { onLongClick(event) }
                     if (index != events.lastIndex) HorizontalDivider(color = WebLine, thickness = 1.dp)
                 }
             }
@@ -533,35 +755,33 @@ private fun TimelineCard(
 @Composable
 private fun TimelineRow(event: RecorderEvent, duration: String, showSeconds: Boolean, onLongClick: () -> Unit) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = {}, onLongClick = onLongClick)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
+        Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onLongClick).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             HkTime.formatTime(event.timestamp, showSeconds),
-            fontSize = 15.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.Black,
-            modifier = Modifier.width(if (showSeconds) 86.dp else 68.dp),
+            modifier = Modifier.width(if (showSeconds) 82.dp else 65.dp),
             color = WebInk,
         )
         Canvas(Modifier.size(7.dp)) {
             drawCircle(
                 color = when (event.kind) {
                     EventKind.BUS -> WebBus
+                    EventKind.STOP -> WebAccent
                     EventKind.EXTRA -> WebWarm
-                    else -> WebAccent
+                    else -> WebAccent2
                 }
             )
         }
         Spacer(Modifier.width(8.dp))
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(event.label, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(event.label, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (event.auto) {
                 Spacer(Modifier.width(5.dp))
-                Surface(shape = RoundedCornerShape(99.dp), color = Color.Transparent, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF353C4B))) {
-                    Text("AUTO", fontSize = 8.sp, color = Color(0xFFB8BECB), modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                Surface(shape = RoundedCornerShape(99.dp), color = Color.Transparent, border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF5A4153))) {
+                    Text("AUTO", fontSize = 8.sp, color = Color(0xFFD9B8CA), modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
                 }
             }
         }
@@ -569,7 +789,7 @@ private fun TimelineRow(event: RecorderEvent, duration: String, showSeconds: Boo
             duration,
             fontSize = 11.sp,
             fontWeight = if (event.terminal) FontWeight.Black else FontWeight.Medium,
-            color = if (event.terminal) Color(0xFFBDB6FF) else Color(0xFFAEB6C7),
+            color = if (event.terminal) WebAccent2 else Color(0xFFC0B6C1),
             textAlign = TextAlign.End,
         )
     }
@@ -582,63 +802,117 @@ private fun durationLabel(event: RecorderEvent, next: RecorderEvent?, viewedDate
 }
 
 @Composable
-private fun SettingsDrawer(
-    state: RecorderState,
-    onSeconds: (Boolean) -> Unit,
-    onRefresh: () -> Unit,
-    onHistory: () -> Unit,
-    onStopTracking: () -> Unit,
-) {
-    ModalDrawerSheet(
-        modifier = Modifier.fillMaxWidth(0.84f),
-        drawerContainerColor = Color(0xFF12161E),
-        drawerContentColor = WebInk,
+private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate) {
+    val summary = RecorderAnalytics.daySummary(events, date)
+    ColorGradientCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = listOf(Color(0xFF201525), Color(0xFF15151C)),
+        border = Color(0xFF493047),
+        shape = RoundedCornerShape(18.dp),
     ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text("Settings", fontSize = 20.sp, fontWeight = FontWeight.Black)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("顯示秒數", fontWeight = FontWeight.Bold)
-                    Text("關閉都會繼續保存秒數", fontSize = 10.sp, color = WebMuted)
-                }
-                Switch(checked = state.settings.showSeconds, onCheckedChange = onSeconds)
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Today Summary", fontWeight = FontWeight.Black, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                if (summary.complete) Text("✓ 完成", color = WebGood, fontSize = 10.sp, fontWeight = FontWeight.Black)
             }
-            HorizontalDivider(color = WebLine)
-            Text("ETA", fontSize = 11.sp, color = WebMuted, fontWeight = FontWeight.Black)
-            Text("返工：德福花園\n放工：屏麗徑南行\n38 / 42C · 官方 KMB ETA", fontSize = 12.sp, lineHeight = 19.sp, color = Color(0xFFD3D7DF))
-            Button(
-                onClick = onRefresh,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = Color(0xFFA5F5E9)),
-            ) { Text("立即更新 ETA", fontWeight = FontWeight.Bold) }
-            OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFC9C3FF))) {
-                Text("巴士歷史 / Pattern", fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SummaryMetric("等車", HkTime.formatDuration(summary.waitMs), WebAccent, Modifier.weight(1f))
+                SummaryMetric("巴士", HkTime.formatDuration(summary.busMs), WebBus, Modifier.weight(1f))
             }
-            if (state.tracking.active) {
-                OutlinedButton(onClick = onStopTracking, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebDanger)) {
-                    Text("停止 ETA Tracking")
-                }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SummaryMetric("返工", summary.workMs?.let(HkTime::formatDuration) ?: "—", WebAccent2, Modifier.weight(1f))
+                SummaryMetric("放工返屋企", summary.homeMs?.let(HkTime::formatDuration) ?: "—", WebWarm, Modifier.weight(1f))
             }
-            Text("左邊緣向右 Swipe 可再次打開此頁。", fontSize = 10.sp, color = WebMuted)
         }
     }
 }
 
 @Composable
-private fun EntryActionsDialog(event: RecorderEvent, onDismiss: () -> Unit, onRename: () -> Unit, onTime: () -> Unit, onDelete: () -> Unit) {
+private fun SummaryMetric(label: String, value: String, color: Color, modifier: Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(13.dp), color = Color(0xFF120F15), border = androidx.compose.foundation.BorderStroke(1.dp, WebLine)) {
+        Column(Modifier.padding(9.dp)) {
+            Text(label, fontSize = 9.sp, color = WebMuted, fontWeight = FontWeight.Bold)
+            Text(value, fontSize = 16.sp, color = color, fontWeight = FontWeight.Black)
+        }
+    }
+}
+
+@Composable
+private fun SettingsDrawer(
+    state: RecorderState,
+    onSeconds: (Boolean) -> Unit,
+    onRefresh: () -> Unit,
+    onHistory: () -> Unit,
+    onBackup: () -> Unit,
+    onRestore: () -> Unit,
+    onStopTracking: () -> Unit,
+) {
+    ModalDrawerSheet(
+        modifier = Modifier.fillMaxWidth(0.86f),
+        drawerContainerColor = Color(0xFF121017),
+        drawerContentColor = WebInk,
+    ) {
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 16.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Settings", fontSize = 21.sp, fontWeight = FontWeight.Black, color = WebAccent)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("顯示秒數", fontWeight = FontWeight.Bold)
+                    Text("Timestamp 會一直保存到秒", fontSize = 10.sp, color = WebMuted)
+                }
+                Switch(checked = state.settings.showSeconds, onCheckedChange = onSeconds)
+            }
+            HorizontalDivider(color = WebLine)
+            Text("ETA", fontSize = 11.sp, color = WebMuted, fontWeight = FontWeight.Black)
+            Text("返工：德福花園\n放工：屏麗徑南行\n38 / 42C · 政府 / KMB raw ETA · 60 秒 tracking", fontSize = 12.sp, lineHeight = 19.sp, color = Color(0xFFE0D5DF))
+            Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = Color(0xFFA5F5E9))) {
+                Text("立即更新 ETA", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFFB8D9))) {
+                Text("History / Graph / Weekday Pattern", fontWeight = FontWeight.Bold)
+            }
+            HorizontalDivider(color = WebLine)
+            Text("資料", fontSize = 11.sp, color = WebMuted, fontWeight = FontWeight.Black)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onBackup, modifier = Modifier.weight(1f), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebGood)) { Text("Backup") }
+                OutlinedButton(onClick = onRestore, modifier = Modifier.weight(1f), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebWarm)) { Text("Restore") }
+            }
+            Text("Backup 係 JSON，可用嚟完整 Restore；暫時唔做 CSV。", fontSize = 10.sp, color = WebMuted)
+            HorizontalDivider(color = WebLine)
+            Text("Widget", fontSize = 11.sp, color = WebMuted, fontWeight = FontWeight.Black)
+            Text("長按 Android 主畫面 → Widgets → Time Recorder。Widget 有 Smart Next Action、38 / 42C 同 cached ETA。", fontSize = 11.sp, lineHeight = 17.sp, color = Color(0xFFD6CBD5))
+            if (state.tracking.active) {
+                OutlinedButton(onClick = onStopTracking, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebDanger)) {
+                    Text("停止 ETA Tracking")
+                }
+            }
+            Text("左邊緣向右 Swipe 或右上角 ⚙ 可打開 Settings。", fontSize = 10.sp, color = WebMuted)
+        }
+    }
+}
+
+@Composable
+private fun EntryActionsDialog(
+    event: RecorderEvent,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onTime: () -> Unit,
+    onRoute: (String) -> Unit,
+    onDelete: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(event.label) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (event.kind == EventKind.BUS) {
+                    val alternate = if (event.route == "38") "42C" else "38"
+                    Button(onClick = { onRoute(alternate) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = WebBus)) {
+                        Text("只改巴士號碼 → $alternate")
+                    }
+                }
                 Button(onClick = onRename, modifier = Modifier.fillMaxWidth()) { Text("改名稱") }
                 Button(onClick = onTime, modifier = Modifier.fillMaxWidth()) { Text("改時間") }
                 OutlinedButton(onClick = onDelete, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebDanger)) { Text("Delete") }
@@ -664,14 +938,14 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onSave: (String
 @Composable
 private fun BackfillDialog(onDismiss: () -> Unit, onSelect: (String, EventKind, String?, Boolean) -> Unit) {
     val entries = listOf(
-        Backfill("返工"), Backfill("上 38", EventKind.BUS, "38"), Backfill("上 42C", EventKind.BUS, "42C"),
+        Backfill("返工"), Backfill("到巴士站", EventKind.STOP), Backfill("上 38", EventKind.BUS, "38"), Backfill("上 42C", EventKind.BUS, "42C"),
         Backfill("到餐廳"), Backfill("到公司"), Backfill("放工"), Backfill("落車"), Backfill("到屋企", terminal = true), Backfill("其他事", EventKind.EXTRA),
     )
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("補記") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 entries.forEach { e ->
                     TextButton(onClick = { onSelect(e.label, e.kind, e.route, e.terminal) }, modifier = Modifier.fillMaxWidth()) {
                         Text(e.label, modifier = Modifier.fillMaxWidth())
@@ -688,14 +962,46 @@ private data class Backfill(val label: String, val kind: EventKind = EventKind.D
 
 @Composable
 private fun BusHistoryDialog(state: RecorderState, onDismiss: () -> Unit) {
+    var mode by remember { mutableStateOf(CommuteMode.HOME) }
+    var route by remember { mutableStateOf("38") }
+    var metric by remember { mutableStateOf(HistoryMetric.JOURNEY) }
+    val bus = state.events.filter { it.kind == EventKind.BUS && it.route == route && RecorderAnalytics.commuteOf(it) == mode }.sortedBy { it.timestamp }
+    val journeys = RecorderAnalytics.journeySamples(state.events, route, mode)
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("38 / 42C History") },
+        title = { Text("Bus History / Pattern", fontWeight = FontWeight.Black) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                HistorySection("返工", CommuteMode.WORK, state.events)
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SelectPill("返工", mode == CommuteMode.WORK) { mode = CommuteMode.WORK }
+                    SelectPill("放工", mode == CommuteMode.HOME) { mode = CommuteMode.HOME }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SelectPill("38", route == "38") { route = "38" }
+                    SelectPill("42C", route == "42C") { route = "42C" }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SelectPill("車程變化", metric == HistoryMetric.JOURNEY) { metric = HistoryMetric.JOURNEY }
+                    SelectPill("上車時間", metric == HistoryMetric.BOARDING) { metric = HistoryMetric.BOARDING }
+                }
                 HorizontalDivider(color = WebLine)
-                HistorySection("放工", CommuteMode.HOME, state.events)
+                if (metric == HistoryMetric.JOURNEY) {
+                    JourneyHistory(journeys)
+                } else {
+                    BoardingHistory(bus)
+                }
+                HorizontalDivider(color = WebLine)
+                Text("Weekday Pattern", fontSize = 13.sp, fontWeight = FontWeight.Black, color = WebAccent)
+                if (metric == HistoryMetric.JOURNEY) {
+                    WeekdayRowsJourney(journeys)
+                } else {
+                    WeekdayRowsBoarding(bus)
+                }
+                val wait = RecorderAnalytics.waitSamples(state.events, mode)
+                if (wait.isNotEmpty()) {
+                    Text("等車 median ${HkTime.formatDuration(RecorderAnalytics.medianLong(wait))} · ${wait.size} samples", fontSize = 10.sp, color = WebMuted)
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
@@ -703,69 +1009,127 @@ private fun BusHistoryDialog(state: RecorderState, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun HistorySection(title: String, mode: CommuteMode, events: List<RecorderEvent>) {
-    Text(title, fontWeight = FontWeight.Black, fontSize = 17.sp)
-    listOf("38", "42C").forEach { route ->
-        val bus = events.filter { it.kind == EventKind.BUS && it.route == route && (it.commute ?: HkTime.modeAt(it.timestamp)) == mode }.sortedBy { it.timestamp }
-        val minutes = bus.map { HkTime.minuteOfDay(it.timestamp).toDouble() }.sorted()
-        val durations = bus.mapNotNull { b ->
-            val next = events.filter { it.timestamp > b.timestamp && HkTime.date(it.timestamp) == HkTime.date(b.timestamp) }.minByOrNull { it.timestamp }
-            next?.let { it.timestamp - b.timestamp }
-        }.sorted()
-        val medianMinute = median(minutes)
-        val medianDuration = medianLong(durations)
-        Surface(shape = RoundedCornerShape(15.dp), color = Color(0xFF11151C), border = androidx.compose.foundation.BorderStroke(1.dp, WebLine), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(11.dp)) {
-                Text(route, fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFFA5F5E9))
-                Text(
-                    if (bus.isEmpty()) "未有資料" else "典型上車 ${HkTime.formatMinuteOfDay(medianMinute)} · 車程 ${HkTime.formatDuration(medianDuration)} · ${bus.size} trips",
-                    fontSize = 10.sp,
-                    color = Color(0xFFAEB5C3),
-                )
-                if (bus.size >= 2) {
-                    Spacer(Modifier.height(8.dp))
-                    BoardingPatternChart(bus.takeLast(24))
+private fun SelectPill(text: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(99.dp),
+        color = if (selected) WebAccentSoft else Color(0xFF151218),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) WebAccent else WebLine),
+    ) {
+        Text(text, modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = if (selected) Color(0xFFFFB8D9) else WebMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun JourneyHistory(samples: List<com.quickstamp.timerecorder.model.JourneySample>) {
+    if (samples.isEmpty()) {
+        Text("未有足夠車程資料", color = WebMuted, fontSize = 12.sp)
+        return
+    }
+    val durations = samples.map { it.durationMs }
+    val median = RecorderAnalytics.medianLong(durations)
+    val q1 = RecorderAnalytics.percentileLong(durations, 0.25)
+    val q3 = RecorderAnalytics.percentileLong(durations, 0.75)
+    Text("Median ${HkTime.formatDuration(median)} · typical ${HkTime.formatDuration(q1)}–${HkTime.formatDuration(q3)} · ${samples.size} trips", fontSize = 11.sp, color = Color(0xFFE0D5DF))
+    TrendChart(
+        values = samples.takeLast(30).map { (it.durationMs / 1000f / 60f) },
+        color = WebBus,
+        minLabel = HkTime.formatDuration(durations.minOrNull() ?: 0L),
+        maxLabel = HkTime.formatDuration(durations.maxOrNull() ?: 0L),
+        startLabel = HkTime.formatDateShort(HkTime.date(samples.takeLast(30).first().bus.timestamp)),
+        endLabel = HkTime.formatDateShort(HkTime.date(samples.last().bus.timestamp)),
+    )
+}
+
+@Composable
+private fun BoardingHistory(events: List<RecorderEvent>) {
+    if (events.isEmpty()) {
+        Text("未有上車資料", color = WebMuted, fontSize = 12.sp)
+        return
+    }
+    val values = events.map { HkTime.minuteOfDay(it.timestamp).toDouble() }
+    val median = RecorderAnalytics.medianDouble(values)
+    Text("Typical ${HkTime.formatMinuteOfDay(median)} · ${events.size} boardings", fontSize = 11.sp, color = Color(0xFFE0D5DF))
+    val last = events.takeLast(30)
+    TrendChart(
+        values = last.map { HkTime.minuteOfDay(it.timestamp).toFloat() },
+        color = WebAccent,
+        minLabel = HkTime.formatMinuteOfDay(values.minOrNull() ?: 0.0),
+        maxLabel = HkTime.formatMinuteOfDay(values.maxOrNull() ?: 0.0),
+        startLabel = HkTime.formatDateShort(HkTime.date(last.first().timestamp)),
+        endLabel = HkTime.formatDateShort(HkTime.date(last.last().timestamp)),
+    )
+}
+
+@Composable
+private fun TrendChart(values: List<Float>, color: Color, minLabel: String, maxLabel: String, startLabel: String, endLabel: String) {
+    if (values.isEmpty()) return
+    Column {
+        Row(Modifier.fillMaxWidth()) {
+            Text(maxLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.width(62.dp))
+            Canvas(Modifier.weight(1f).height(108.dp)) {
+                val min = values.minOrNull() ?: 0f
+                val max = values.maxOrNull() ?: min + 1f
+                val range = (max - min).takeIf { it > 0.001f } ?: 1f
+                val left = 4f
+                val right = size.width - 4f
+                val top = 5f
+                val bottom = size.height - 8f
+                repeat(4) { i ->
+                    val y = top + (bottom - top) * i / 3f
+                    drawLine(WebLine, Offset(left, y), Offset(right, y), strokeWidth = 1f)
+                }
+                var previous: Offset? = null
+                values.forEachIndexed { index, value ->
+                    val x = if (values.size == 1) size.width / 2f else left + (right - left) * index / (values.size - 1f)
+                    val y = bottom - ((value - min) / range).coerceIn(0f, 1f) * (bottom - top)
+                    val point = Offset(x, y)
+                    previous?.let { drawLine(color, it, point, strokeWidth = 3f, cap = StrokeCap.Round) }
+                    drawCircle(color, radius = 4f, center = point)
+                    previous = point
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth()) {
+            Text(minLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.width(62.dp))
+            Text(startLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.weight(1f))
+            Text(endLabel, fontSize = 8.sp, color = WebMuted)
+        }
+    }
+}
+
+@Composable
+private fun WeekdayRowsJourney(samples: List<com.quickstamp.timerecorder.model.JourneySample>) {
+    val map = RecorderAnalytics.weekdayJourneyMedians(samples)
+    WeekdayRows { day -> map[day]?.let(HkTime::formatDuration) ?: "—" }
+}
+
+@Composable
+private fun WeekdayRowsBoarding(events: List<RecorderEvent>) {
+    val map = RecorderAnalytics.weekdayBoardingMedians(events)
+    WeekdayRows { day -> map[day]?.let(HkTime::formatMinuteOfDay) ?: "—" }
+}
+
+@Composable
+private fun WeekdayRows(value: (DayOfWeek) -> String) {
+    val days = listOf(DayOfWeek.MONDAY to "Mon", DayOfWeek.TUESDAY to "Tue", DayOfWeek.WEDNESDAY to "Wed", DayOfWeek.THURSDAY to "Thu", DayOfWeek.FRIDAY to "Fri")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        days.forEach { (day, label) ->
+            Surface(Modifier.weight(1f), shape = RoundedCornerShape(10.dp), color = Color(0xFF151218), border = androidx.compose.foundation.BorderStroke(1.dp, WebLine)) {
+                Column(Modifier.padding(vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(label, fontSize = 8.sp, color = WebMuted)
+                    Text(value(day), fontSize = 9.sp, fontWeight = FontWeight.Black, color = WebInk, maxLines = 1)
                 }
             }
         }
     }
 }
 
-@Composable
-private fun BoardingPatternChart(events: List<RecorderEvent>) {
-    val values = events.map { HkTime.minuteOfDay(it.timestamp).toFloat() }
-    val min = (values.minOrNull() ?: 0f) - 5f
-    val max = (values.maxOrNull() ?: 1f) + 5f
-    Canvas(Modifier.fillMaxWidth().height(70.dp)) {
-        val width = size.width
-        val height = size.height
-        drawLine(WebLine, Offset(0f, height - 8f), Offset(width, height - 8f), strokeWidth = 2f, cap = StrokeCap.Round)
-        values.forEachIndexed { index, value ->
-            val x = if (values.size <= 1) width / 2f else index * width / (values.size - 1f)
-            val ratio = if (max <= min) 0.5f else ((value - min) / (max - min)).coerceIn(0f, 1f)
-            val y = height - 10f - ratio * (height - 20f)
-            drawCircle(WebBus, radius = 4.5f, center = Offset(x, y))
-        }
-    }
-}
-
-private fun median(values: List<Double>): Double {
-    if (values.isEmpty()) return 0.0
-    val middle = values.size / 2
-    return if (values.size % 2 == 1) values[middle] else (values[middle - 1] + values[middle]) / 2.0
-}
-
-private fun medianLong(values: List<Long>): Long {
-    if (values.isEmpty()) return 0L
-    val middle = values.size / 2
-    return if (values.size % 2 == 1) values[middle] else (values[middle - 1] + values[middle]) / 2L
-}
-
-private fun showTimePicker(context: android.content.Context, date: LocalDate, initialTimestamp: Long, onPicked: (Long) -> Unit) {
+private fun showTimePicker(context: Context, date: LocalDate, initialTimestamp: Long, onPicked: (Long) -> Unit) {
     val time = Instant.ofEpochMilli(initialTimestamp).atZone(HkTime.zone)
     TimePickerDialog(context, { _, hour, minute -> onPicked(HkTime.at(date, hour, minute, 0)) }, time.hour, time.minute, true).show()
 }
 
-private fun showDatePicker(context: android.content.Context, initial: LocalDate, onPicked: (LocalDate) -> Unit) {
+private fun showDatePicker(context: Context, initial: LocalDate, onPicked: (LocalDate) -> Unit) {
     DatePickerDialog(context, { _, year, month, day -> onPicked(LocalDate.of(year, month + 1, day)) }, initial.year, initial.monthValue - 1, initial.dayOfMonth).show()
 }

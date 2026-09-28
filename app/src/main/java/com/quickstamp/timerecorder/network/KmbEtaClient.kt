@@ -14,6 +14,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.OffsetDateTime
 import java.util.Locale
+import com.quickstamp.timerecorder.widget.TimeRecorderWidgetProvider
 
 object KmbEtaClient {
     private const val BASE = "https://data.etabus.gov.hk/v1/transport/kmb"
@@ -36,9 +37,11 @@ object KmbEtaClient {
             val now = HkTime.now()
             val eta = routes.associateWith { route -> fetchEta(stopId, route, mode, now) }
             AppStore.updateEtaSuccess(app, mode, eta, HkTime.now())
+            runCatching { TimeRecorderWidgetProvider.updateAll(app) }
             RefreshResult(mode, eta, HkTime.now())
         }.onFailure { error ->
             AppStore.updateEtaFailure(app, mode, error.message ?: "ETA refresh failed", HkTime.now())
+            runCatching { TimeRecorderWidgetProvider.updateAll(app) }
         }
     }
 
@@ -150,7 +153,7 @@ object KmbEtaClient {
             readTimeout = TIMEOUT_MS
             useCaches = false
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "TimeRecorder/2.0 Android")
+            setRequestProperty("User-Agent", "TimeRecorder/2.3 Android")
         }
         try {
             val code = connection.responseCode
