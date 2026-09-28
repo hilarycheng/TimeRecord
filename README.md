@@ -69,3 +69,13 @@ The project intentionally keeps the external Kotlin Android plugin and uses:
 - `android.newDsl=false`
 
 This avoids the AGP 9.x new-DSL incompatibility shown by GitHub Actions while preserving the current Compose/Kotlin setup.
+
+## GitHub Actions release build
+
+The project uses AGP 9.4 built-in Kotlin. The workflow at `.github/workflows/android-build.yml` builds only the signed release APK.
+
+Required repository secrets:
+- `SIGNING_KEY_B64`
+- `SIGNING_STORE_PASSWORD`
+- `SIGNING_KEY_ALIAS`
+- `SIGNING_KEY_PASSWORD`

@@ -1,4 +1,4 @@
-name: Android Build
+name: Android Release Build
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  build-release:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,8 +31,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "ANDROID_HOME=${ANDROID_HOME:-}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
           SDKMANAGER="$(command -v sdkmanager || true)"
           if [ -z "$SDKMANAGER" ] && [ -n "${ANDROID_HOME:-}" ]; then
             SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
@@ -57,14 +55,10 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;36.0.0"
 
-          # API 37 is currently installed by GitHub runners as android-37.0,
-          # while AGP/compileSdk=37 may still look for android-37.
           if [ ! -e "$SDK_ROOT/platforms/android-37" ]; then
             ln -s "$SDK_ROOT/platforms/android-37.0" "$SDK_ROOT/platforms/android-37"
           fi
 
-          echo "Installed Android platforms:"
-          ls -la "$SDK_ROOT/platforms" | tail -n 30
           test -f "$SDK_ROOT/platforms/android-37/android.jar"
           test -d "$SDK_ROOT/build-tools/36.0.0"
 
@@ -73,8 +67,16 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
+      - name: Validate release signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEY_B64" || { echo "Missing SIGNING_KEY_B64"; exit 1; }
+          test -n "$SIGNING_STORE_PASSWORD" || { echo "Missing SIGNING_STORE_PASSWORD"; exit 1; }
+          test -n "$SIGNING_KEY_ALIAS" || { echo "Missing SIGNING_KEY_ALIAS"; exit 1; }
+          test -n "$SIGNING_KEY_PASSWORD" || { echo "Missing SIGNING_KEY_PASSWORD"; exit 1; }
+
       - name: Decode release signing key
-        if: ${{ env.SIGNING_KEY_B64 != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -86,18 +88,8 @@ jobs:
           keyPassword=$SIGNING_KEY_PASSWORD
           EOF2
 
-      - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
-
-      - name: Build release APK
+      - name: Build signed release APK
         run: gradle --no-daemon :app:assembleRelease
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: TimeRecorder-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
