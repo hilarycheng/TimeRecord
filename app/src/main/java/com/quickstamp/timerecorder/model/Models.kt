@@ -136,4 +136,12 @@ object HkTime {
         val rounded = value.toInt().coerceIn(0, 1439)
         return "%02d:%02d".format(Locale.ENGLISH, rounded / 60, rounded % 60)
     }
+
+    fun formatSecondOfDay(value: Double): String {
+        val rounded = value.toInt().coerceIn(0, 86_399)
+        val hours = rounded / 3600
+        val minutes = (rounded % 3600) / 60
+        val seconds = rounded % 60
+        return "%02d:%02d:%02d".format(Locale.ENGLISH, hours, minutes, seconds)
+    }
 }

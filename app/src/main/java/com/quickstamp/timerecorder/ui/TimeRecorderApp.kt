@@ -105,7 +105,8 @@ import java.util.concurrent.Executors
 import kotlin.math.ceil
 
 private data class TapFeedback(val key: String, val text: String, val timestamp: Long)
-private enum class HistoryMetric { JOURNEY, BOARDING }
+private enum class HistoryMetric { BOARDING, WAIT, JOURNEY }
+private enum class HistoryRange(val days: Long?) { DAYS_7(7), DAYS_30(30), DAYS_90(90), ALL(null) }
 
 @Composable
 fun TimeRecorderApp() {
@@ -220,6 +221,7 @@ fun TimeRecorderApp() {
             if (day != lastDay) {
                 AppStore.autoClosePastDays(context, now)
                 viewedDate = day
+                reload()
                 lastDay = day
             }
             val version = AppStore.version(context)
@@ -269,7 +271,9 @@ fun TimeRecorderApp() {
         val events = state.events.filter { HkTime.date(it.timestamp) == viewedDate }.sortedBy { it.timestamp }
         val summary = RecorderAnalytics.daySummary(events, viewedDate)
         val isToday = viewedDate == today
-        val showLiveControls = isToday && !summary.complete
+        // Completion is scoped to the viewed calendar day. A new day always starts with controls visible.
+        val completedToday = isToday && events.any { it.terminal }
+        val showLiveControls = isToday && !completedToday
         val showSmartBar = showLiveControls || !isToday
         val next = WorkflowPlanner.next(state.events, viewedDate, now)
 
@@ -855,17 +859,34 @@ private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate, compl
                 )
                 if (summary.complete) Text("✓ 完成", color = WebGood, fontSize = 10.sp, fontWeight = FontWeight.Black)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SummaryMetric("等車", HkTime.formatDurationReadable(summary.waitMs), WebAccent, Modifier.weight(1f))
-                SummaryMetric("巴士車程", HkTime.formatDurationReadable(summary.busMs), WebBus, Modifier.weight(1f))
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SummaryMetric("工作時間", summary.workMs?.let(HkTime::formatDurationReadable) ?: "—", WebAccent2, Modifier.weight(1f))
-                SummaryMetric("放工返屋企", summary.homeMs?.let(HkTime::formatDurationReadable) ?: "—", WebWarm, Modifier.weight(1f))
-            }
+
+            SummaryMainBlock(
+                label = "返工路程",
+                value = summary.workCommuteMs?.let(HkTime::formatDurationReadable) ?: "—",
+                color = WebAccent,
+                sub1Label = "等車",
+                sub1Value = HkTime.formatDurationReadable(summary.workWaitMs),
+                sub2Label = "巴士",
+                sub2Value = HkTime.formatDurationReadable(summary.workBusMs),
+            )
+            SummaryMainBlock(
+                label = "工作時間",
+                value = summary.workMs?.let(HkTime::formatDurationReadable) ?: "—",
+                color = WebAccent2,
+            )
+            SummaryMainBlock(
+                label = "放工返屋企",
+                value = summary.homeCommuteMs?.let(HkTime::formatDurationReadable) ?: "—",
+                color = WebWarm,
+                sub1Label = "等車",
+                sub1Value = HkTime.formatDurationReadable(summary.homeWaitMs),
+                sub2Label = "巴士",
+                sub2Value = HkTime.formatDurationReadable(summary.homeBusMs),
+            )
+
             if (summary.complete) {
                 Text(
-                    "工作時間 = 到公司 → 放工；放工返屋企 = 放工 → 到屋企",
+                    "返工路程 = 返工 → 到公司 · 工作時間 = 到公司 → 放工 · 放工返屋企 = 放工 → 到屋企",
                     fontSize = 9.sp,
                     lineHeight = 13.sp,
                     color = WebDim,
@@ -876,18 +897,48 @@ private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate, compl
 }
 
 @Composable
-private fun SummaryMetric(label: String, value: String, color: Color, modifier: Modifier) {
+private fun SummaryMainBlock(
+    label: String,
+    value: String,
+    color: Color,
+    sub1Label: String? = null,
+    sub1Value: String? = null,
+    sub2Label: String? = null,
+    sub2Value: String? = null,
+) {
     Surface(
-        modifier,
-        shape = RoundedCornerShape(13.dp),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
         color = Color(0xFF10131A),
         contentColor = WebInk,
         border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
     ) {
-        Column(Modifier.padding(9.dp)) {
-            Text(label, fontSize = 9.sp, color = WebMuted, fontWeight = FontWeight.Bold)
-            Text(value, fontSize = 15.sp, color = color, fontWeight = FontWeight.Black, maxLines = 1)
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(label, fontSize = 10.sp, color = WebMuted, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text(value, fontSize = 17.sp, color = color, fontWeight = FontWeight.Black)
+            }
+            if (sub1Label != null && sub1Value != null && sub2Label != null && sub2Value != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SummarySubMetric(sub1Label, sub1Value, Modifier.weight(1f))
+                    SummarySubMetric(sub2Label, sub2Value, Modifier.weight(1f))
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun SummarySubMetric(label: String, value: String, modifier: Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF171B24))
+            .padding(horizontal = 9.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontSize = 9.sp, color = WebMuted, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(value, fontSize = 11.sp, color = WebInk, fontWeight = FontWeight.Black)
     }
 }
 
@@ -1018,18 +1069,28 @@ private data class Backfill(val label: String, val kind: EventKind = EventKind.D
 private fun BusHistoryDialog(state: RecorderState, onDismiss: () -> Unit) {
     var mode by remember { mutableStateOf(CommuteMode.HOME) }
     var route by remember { mutableStateOf("38") }
-    var metric by remember { mutableStateOf(HistoryMetric.JOURNEY) }
-    val bus = state.events.filter { it.kind == EventKind.BUS && it.route == route && RecorderAnalytics.commuteOf(it) == mode }.sortedBy { it.timestamp }
+    var metric by remember { mutableStateOf(HistoryMetric.BOARDING) }
+    var range by remember { mutableStateOf(HistoryRange.DAYS_30) }
+
+    val threshold = range.days?.let { HkTime.today().minusDays(it - 1L) }
+    fun inRange(timestamp: Long): Boolean = threshold == null || HkTime.date(timestamp) >= threshold
+
+    val bus = state.events
+        .filter { it.kind == EventKind.BUS && it.route == route && RecorderAnalytics.commuteOf(it) == mode && inRange(it.timestamp) }
+        .sortedBy { it.timestamp }
     val journeys = RecorderAnalytics.journeySamples(state.events, route, mode)
+        .filter { inRange(it.bus.timestamp) }
+    val waits = RecorderAnalytics.waitJourneySamples(state.events, route, mode)
+        .filter { inRange(it.bus.timestamp) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        modifier = Modifier.fillMaxWidth(0.94f),
+        modifier = Modifier.fillMaxWidth(0.96f),
         properties = DialogProperties(usePlatformDefaultWidth = false),
         containerColor = WebCard2,
         titleContentColor = WebInk,
         textContentColor = WebInk,
-        title = { Text("History / Charts", fontWeight = FontWeight.Black, color = WebInk) },
+        title = { Text("Bus History / Charts", fontWeight = FontWeight.Black, color = WebInk) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1041,25 +1102,30 @@ private fun BusHistoryDialog(state: RecorderState, onDismiss: () -> Unit) {
                     SelectPill("42C", route == "42C") { route = "42C" }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SelectPill("車程變化", metric == HistoryMetric.JOURNEY) { metric = HistoryMetric.JOURNEY }
-                    SelectPill("上車時間", metric == HistoryMetric.BOARDING) { metric = HistoryMetric.BOARDING }
+                    SelectPill("到站/上車", metric == HistoryMetric.BOARDING) { metric = HistoryMetric.BOARDING }
+                    SelectPill("等車", metric == HistoryMetric.WAIT) { metric = HistoryMetric.WAIT }
+                    SelectPill("車程", metric == HistoryMetric.JOURNEY) { metric = HistoryMetric.JOURNEY }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    SelectPill("7日", range == HistoryRange.DAYS_7) { range = HistoryRange.DAYS_7 }
+                    SelectPill("30日", range == HistoryRange.DAYS_30) { range = HistoryRange.DAYS_30 }
+                    SelectPill("3個月", range == HistoryRange.DAYS_90) { range = HistoryRange.DAYS_90 }
+                    SelectPill("全部", range == HistoryRange.ALL) { range = HistoryRange.ALL }
                 }
                 HorizontalDivider(color = WebLine)
-                if (metric == HistoryMetric.JOURNEY) {
-                    JourneyHistory(journeys)
-                } else {
-                    BoardingHistory(bus)
+
+                when (metric) {
+                    HistoryMetric.BOARDING -> BoardingHistory(bus)
+                    HistoryMetric.WAIT -> WaitHistory(waits)
+                    HistoryMetric.JOURNEY -> JourneyHistory(journeys)
                 }
+
                 HorizontalDivider(color = WebLine)
-                Text("Weekday Pattern", fontSize = 13.sp, fontWeight = FontWeight.Black, color = WebAccent)
-                if (metric == HistoryMetric.JOURNEY) {
-                    WeekdayRowsJourney(journeys)
-                } else {
-                    WeekdayRowsBoarding(bus)
-                }
-                val wait = RecorderAnalytics.waitSamples(state.events, mode)
-                if (wait.isNotEmpty()) {
-                    Text("等車 median ${HkTime.formatDurationReadable(RecorderAnalytics.medianLong(wait))} · ${wait.size} samples", fontSize = 10.sp, color = WebMuted)
+                Text("Mon–Fri Pattern", fontSize = 13.sp, fontWeight = FontWeight.Black, color = WebAccent)
+                when (metric) {
+                    HistoryMetric.BOARDING -> WeekdayRowsBoarding(bus)
+                    HistoryMetric.WAIT -> WeekdayRowsWait(waits)
+                    HistoryMetric.JOURNEY -> WeekdayRowsJourney(journeys)
                 }
             }
         },
@@ -1075,27 +1141,56 @@ private fun SelectPill(text: String, selected: Boolean, onClick: () -> Unit) {
         color = if (selected) WebAccentSoft else WebCard,
         border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) WebAccent else WebLine),
     ) {
-        Text(text, modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = if (selected) Color(0xFFFFD8E8) else WebMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = if (selected) Color(0xFFFFD8E8) else WebMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
 private fun JourneyHistory(samples: List<com.quickstamp.timerecorder.model.JourneySample>) {
     if (samples.isEmpty()) {
-        Text("未有足夠車程資料", color = WebMuted, fontSize = 12.sp)
+        Text("未有車程資料", color = WebMuted, fontSize = 12.sp)
         return
     }
     val durations = samples.map { it.durationMs }
     val median = RecorderAnalytics.medianLong(durations)
     val q1 = RecorderAnalytics.percentileLong(durations, 0.25)
     val q3 = RecorderAnalytics.percentileLong(durations, 0.75)
-    Text("Median ${HkTime.formatDurationReadable(median)} · typical ${HkTime.formatDurationReadable(q1)}–${HkTime.formatDurationReadable(q3)} · ${samples.size} trips", fontSize = 11.sp, color = WebInk)
+    Text(
+        "Median ${HkTime.formatDurationReadable(median)} · typical ${HkTime.formatDurationReadable(q1)}–${HkTime.formatDurationReadable(q3)} · ${samples.size} trip${if (samples.size == 1) " · Limited data" else "s"}",
+        fontSize = 11.sp,
+        color = WebInk,
+    )
     TrendChart(
-        values = samples.takeLast(30).map { (it.durationMs / 1000f / 60f) },
+        values = samples.map { it.durationMs / 1000f / 60f },
         color = WebBus,
         minLabel = HkTime.formatDuration(durations.minOrNull() ?: 0L),
         maxLabel = HkTime.formatDuration(durations.maxOrNull() ?: 0L),
-        startLabel = HkTime.formatDateShort(HkTime.date(samples.takeLast(30).first().bus.timestamp)),
+        startLabel = HkTime.formatDateShort(HkTime.date(samples.first().bus.timestamp)),
+        endLabel = HkTime.formatDateShort(HkTime.date(samples.last().bus.timestamp)),
+    )
+}
+
+@Composable
+private fun WaitHistory(samples: List<com.quickstamp.timerecorder.model.WaitSample>) {
+    if (samples.isEmpty()) {
+        Text("未有等車資料", color = WebMuted, fontSize = 12.sp)
+        return
+    }
+    val durations = samples.map { it.durationMs }
+    val median = RecorderAnalytics.medianLong(durations)
+    val q1 = RecorderAnalytics.percentileLong(durations, 0.25)
+    val q3 = RecorderAnalytics.percentileLong(durations, 0.75)
+    Text(
+        "Median ${HkTime.formatDurationReadable(median)} · typical ${HkTime.formatDurationReadable(q1)}–${HkTime.formatDurationReadable(q3)} · ${samples.size} sample${if (samples.size == 1) " · Limited data" else "s"}",
+        fontSize = 11.sp,
+        color = WebInk,
+    )
+    TrendChart(
+        values = samples.map { it.durationMs / 1000f / 60f },
+        color = WebAccent2,
+        minLabel = HkTime.formatDuration(durations.minOrNull() ?: 0L),
+        maxLabel = HkTime.formatDuration(durations.maxOrNull() ?: 0L),
+        startLabel = HkTime.formatDateShort(HkTime.date(samples.first().bus.timestamp)),
         endLabel = HkTime.formatDateShort(HkTime.date(samples.last().bus.timestamp)),
     )
 }
@@ -1106,17 +1201,20 @@ private fun BoardingHistory(events: List<RecorderEvent>) {
         Text("未有上車資料", color = WebMuted, fontSize = 12.sp)
         return
     }
-    val values = events.map { HkTime.minuteOfDay(it.timestamp).toDouble() }
+    val values = events.map { HkTime.secondOfDay(it.timestamp).toDouble() }
     val median = RecorderAnalytics.medianDouble(values)
-    Text("Typical ${HkTime.formatMinuteOfDay(median)} · ${events.size} boardings", fontSize = 11.sp, color = WebInk)
-    val last = events.takeLast(30)
+    Text(
+        "Typical ${HkTime.formatSecondOfDay(median)} · ${events.size} boarding${if (events.size == 1) " · Limited data" else "s"}",
+        fontSize = 11.sp,
+        color = WebInk,
+    )
     TrendChart(
-        values = last.map { HkTime.minuteOfDay(it.timestamp).toFloat() },
+        values = events.map { HkTime.secondOfDay(it.timestamp).toFloat() },
         color = WebAccent,
-        minLabel = HkTime.formatMinuteOfDay(values.minOrNull() ?: 0.0),
-        maxLabel = HkTime.formatMinuteOfDay(values.maxOrNull() ?: 0.0),
-        startLabel = HkTime.formatDateShort(HkTime.date(last.first().timestamp)),
-        endLabel = HkTime.formatDateShort(HkTime.date(last.last().timestamp)),
+        minLabel = HkTime.formatSecondOfDay(values.minOrNull() ?: 0.0),
+        maxLabel = HkTime.formatSecondOfDay(values.maxOrNull() ?: 0.0),
+        startLabel = HkTime.formatDateShort(HkTime.date(events.first().timestamp)),
+        endLabel = HkTime.formatDateShort(HkTime.date(events.last().timestamp)),
     )
 }
 
@@ -1125,15 +1223,15 @@ private fun TrendChart(values: List<Float>, color: Color, minLabel: String, maxL
     if (values.isEmpty()) return
     Column {
         Row(Modifier.fillMaxWidth()) {
-            Text(maxLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.width(62.dp))
-            Canvas(Modifier.weight(1f).height(108.dp)) {
+            Text(maxLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.width(66.dp))
+            Canvas(Modifier.weight(1f).height(122.dp)) {
                 val min = values.minOrNull() ?: 0f
                 val max = values.maxOrNull() ?: min + 1f
                 val range = (max - min).takeIf { it > 0.001f } ?: 1f
-                val left = 4f
-                val right = size.width - 4f
-                val top = 5f
-                val bottom = size.height - 8f
+                val left = 5f
+                val right = size.width - 5f
+                val top = 8f
+                val bottom = size.height - 10f
                 repeat(4) { i ->
                     val y = top + (bottom - top) * i / 3f
                     drawLine(WebLine, Offset(left, y), Offset(right, y), strokeWidth = 1f)
@@ -1144,15 +1242,19 @@ private fun TrendChart(values: List<Float>, color: Color, minLabel: String, maxL
                     val y = bottom - ((value - min) / range).coerceIn(0f, 1f) * (bottom - top)
                     val point = Offset(x, y)
                     previous?.let { drawLine(color, it, point, strokeWidth = 3f, cap = StrokeCap.Round) }
-                    drawCircle(color, radius = 4f, center = point)
+                    drawCircle(color, radius = if (values.size == 1) 6f else 4f, center = point)
                     previous = point
                 }
             }
         }
-        Row(Modifier.fillMaxWidth()) {
-            Text(minLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.width(62.dp))
-            Text(startLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.weight(1f))
-            Text(endLabel, fontSize = 8.sp, color = WebMuted)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(minLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.width(66.dp))
+            if (startLabel == endLabel) {
+                Text(startLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+            } else {
+                Text(startLabel, fontSize = 8.sp, color = WebMuted, modifier = Modifier.weight(1f))
+                Text(endLabel, fontSize = 8.sp, color = WebMuted)
+            }
         }
     }
 }
@@ -1164,9 +1266,15 @@ private fun WeekdayRowsJourney(samples: List<com.quickstamp.timerecorder.model.J
 }
 
 @Composable
+private fun WeekdayRowsWait(samples: List<com.quickstamp.timerecorder.model.WaitSample>) {
+    val map = RecorderAnalytics.weekdayWaitMedians(samples)
+    WeekdayRows { day -> map[day]?.let(HkTime::formatDuration) ?: "—" }
+}
+
+@Composable
 private fun WeekdayRowsBoarding(events: List<RecorderEvent>) {
     val map = RecorderAnalytics.weekdayBoardingMedians(events)
-    WeekdayRows { day -> map[day]?.let(HkTime::formatMinuteOfDay) ?: "—" }
+    WeekdayRows { day -> map[day]?.let(HkTime::formatSecondOfDay) ?: "—" }
 }
 
 @Composable

@@ -9,11 +9,20 @@ data class JourneySample(
     val durationMs: Long,
 )
 
+data class WaitSample(
+    val stop: RecorderEvent,
+    val bus: RecorderEvent,
+    val durationMs: Long,
+)
+
 data class DaySummary(
-    val waitMs: Long = 0L,
-    val busMs: Long = 0L,
+    val workCommuteMs: Long? = null,
+    val workWaitMs: Long = 0L,
+    val workBusMs: Long = 0L,
     val workMs: Long? = null,
-    val homeMs: Long? = null,
+    val homeCommuteMs: Long? = null,
+    val homeWaitMs: Long = 0L,
+    val homeBusMs: Long = 0L,
     val complete: Boolean = false,
 )
 
@@ -31,36 +40,52 @@ object RecorderAnalytics {
         }
     }
 
-    fun waitSamples(events: List<RecorderEvent>, mode: CommuteMode? = null): List<Long> {
+    fun waitJourneySamples(
+        events: List<RecorderEvent>,
+        route: String? = null,
+        mode: CommuteMode? = null,
+    ): List<WaitSample> {
         val all = events.sortedBy { it.timestamp }
-        return all.filter { it.kind == EventKind.STOP && (mode == null || commuteOf(it) == mode) }.mapNotNull { stop ->
-            all.firstOrNull {
+        return all.filter { stop ->
+            stop.kind == EventKind.STOP && (mode == null || commuteOf(stop) == mode)
+        }.mapNotNull { stop ->
+            val stopMode = commuteOf(stop)
+            val bus = all.firstOrNull {
                 it.timestamp >= stop.timestamp &&
                     HkTime.date(it.timestamp) == HkTime.date(stop.timestamp) &&
                     it.kind == EventKind.BUS &&
-                    commuteOf(it) == commuteOf(stop)
-            }?.let { it.timestamp - stop.timestamp }
+                    commuteOf(it) == stopMode
+            }
+            bus?.takeIf { route == null || it.route == route }
+                ?.let { WaitSample(stop, it, it.timestamp - stop.timestamp) }
         }
     }
 
+    fun waitSamples(events: List<RecorderEvent>, mode: CommuteMode? = null): List<Long> =
+        waitJourneySamples(events, mode = mode).map { it.durationMs }
+
     fun daySummary(events: List<RecorderEvent>, date: LocalDate): DaySummary {
         val day = events.filter { HkTime.date(it.timestamp) == date }.sortedBy { it.timestamp }
-        val wait = waitSamples(day).sum()
-        val bus = listOf(CommuteMode.WORK, CommuteMode.HOME).sumOf { mode ->
-            listOf("38", "42C").sumOf { route -> journeySamples(day, route, mode).sumOf { it.durationMs } }
-        }
+
         fun segment(startLabel: String, endLabels: Set<String>): Long? {
             val start = day.firstOrNull { it.label == startLabel } ?: return null
             val end = day.firstOrNull { it.timestamp >= start.timestamp && it.label in endLabels } ?: return null
             return end.timestamp - start.timestamp
         }
+
+        fun waits(mode: CommuteMode): Long = waitJourneySamples(day, mode = mode).sumOf { it.durationMs }
+        fun buses(mode: CommuteMode): Long = listOf("38", "42C").sumOf { route ->
+            journeySamples(day, route, mode).sumOf { it.durationMs }
+        }
+
         return DaySummary(
-            waitMs = wait,
-            busMs = bus,
-            // Work duration is time actually at work: clock-out minus arrival at company.
+            workCommuteMs = segment("返工", setOf("到公司")),
+            workWaitMs = waits(CommuteMode.WORK),
+            workBusMs = buses(CommuteMode.WORK),
             workMs = segment("到公司", setOf("放工")),
-            // Home commute is clock-out to arrival home.
-            homeMs = segment("放工", setOf("到屋企")),
+            homeCommuteMs = segment("放工", setOf("到屋企")),
+            homeWaitMs = waits(CommuteMode.HOME),
+            homeBusMs = buses(CommuteMode.HOME),
             complete = day.any { it.terminal },
         )
     }
@@ -93,7 +118,12 @@ object RecorderAnalytics {
 
     fun weekdayBoardingMedians(events: List<RecorderEvent>): Map<DayOfWeek, Double> =
         events.groupBy { HkTime.date(it.timestamp).dayOfWeek }
-            .mapValues { (_, v) -> medianDouble(v.map { HkTime.minuteOfDay(it.timestamp).toDouble() }) }
+            .mapValues { (_, v) -> medianDouble(v.map { HkTime.secondOfDay(it.timestamp).toDouble() }) }
+            .filterKeys { it.value in DayOfWeek.MONDAY.value..DayOfWeek.FRIDAY.value }
+
+    fun weekdayWaitMedians(samples: List<WaitSample>): Map<DayOfWeek, Long> =
+        samples.groupBy { HkTime.date(it.bus.timestamp).dayOfWeek }
+            .mapValues { (_, v) -> medianLong(v.map { it.durationMs }) }
             .filterKeys { it.value in DayOfWeek.MONDAY.value..DayOfWeek.FRIDAY.value }
 
     fun commuteOf(event: RecorderEvent): CommuteMode = event.commute ?: HkTime.modeAt(event.timestamp)
