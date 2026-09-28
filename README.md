@@ -43,3 +43,29 @@ The release build enables R8 minification and resource shrinking. No Room, Retro
 - versionName: `2.0-compose`
 - minSdk: 26
 - targetSdk / compileSdk: 37
+
+## GitHub Actions build
+
+This project already contains the workflow at:
+
+`.github/workflows/android-build.yml`
+
+No separate workflow file is required.
+
+Repository secrets for a signed update-compatible release:
+
+- `SIGNING_KEY_B64`
+- `SIGNING_STORE_PASSWORD`
+- `SIGNING_KEY_ALIAS`
+- `SIGNING_KEY_PASSWORD`
+
+Do not commit the keystore or `keystore.properties`; `.gitignore` excludes them.
+
+### AGP 9.x compatibility
+
+The project intentionally keeps the external Kotlin Android plugin and uses:
+
+- `android.builtInKotlin=false`
+- `android.newDsl=false`
+
+This avoids the AGP 9.x new-DSL incompatibility shown by GitHub Actions while preserving the current Compose/Kotlin setup.
