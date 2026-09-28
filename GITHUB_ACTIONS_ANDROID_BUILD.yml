@@ -11,6 +11,12 @@ jobs:
     permissions:
       contents: read
 
+    env:
+      SIGNING_KEY_B64: ${{ secrets.SIGNING_KEY_B64 }}
+      SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+      SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+      SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,15 +42,15 @@ jobs:
           gradle-version: '9.6.0'
 
       - name: Decode release signing key
-        if: ${{ secrets.SIGNING_KEY_B64 != '' }}
+        if: ${{ env.SIGNING_KEY_B64 != '' }}
         shell: bash
         run: |
-          echo "${{ secrets.SIGNING_KEY_B64 }}" | base64 --decode > time-recorder-local.keystore
+          printf '%s' "$SIGNING_KEY_B64" | base64 --decode > time-recorder-local.keystore
           cat > keystore.properties <<EOF2
           storeFile=time-recorder-local.keystore
-          storePassword=${{ secrets.SIGNING_STORE_PASSWORD }}
-          keyAlias=${{ secrets.SIGNING_KEY_ALIAS }}
-          keyPassword=${{ secrets.SIGNING_KEY_PASSWORD }}
+          storePassword=$SIGNING_STORE_PASSWORD
+          keyAlias=$SIGNING_KEY_ALIAS
+          keyPassword=$SIGNING_KEY_PASSWORD
           EOF2
 
       - name: Build debug APK
