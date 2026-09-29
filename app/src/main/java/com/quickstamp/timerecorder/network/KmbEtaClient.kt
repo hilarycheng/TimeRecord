@@ -153,7 +153,7 @@ object KmbEtaClient {
             readTimeout = TIMEOUT_MS
             useCaches = false
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "TimeRecorder/2.6 Android")
+            setRequestProperty("User-Agent", "TimeRecorder/2.7 Android")
         }
         try {
             val code = connection.responseCode

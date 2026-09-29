@@ -1,13 +1,32 @@
-# Time Recorder v2.6
+# Time Recorder v2.7 — Unified UI
 
-Native Jetpack Compose commute recorder.
+Native Android app built with Jetpack Compose. No WebView runtime.
 
-## v2.6
-- Smart Next is a deterministic commute state machine: after boarding 38/42C, next is always 落車. Work then continues to 到餐廳 → 到公司; home continues to 到屋企.
-- Main workflow buttons remain visible during an active day; Smart Next stays as a thumb-reach shortcut only.
-- ETA panel shows up to three upcoming buses per route, each with countdown and clock time, while stale-while-refresh cache behavior remains.
-- 今日記錄 is rendered as a vertical timeline with colored nodes, live second-accurate segment duration, and a hollow predicted next step. Long press still edits entries.
-- History/Charts is a full standalone page, not a dialog. The only selector is time range (7 days / 30 days / 3 months / all); multiple plots for boarding time, wait time, and journey time are shown for work/home and 38/42C. One sample still plots as a point.
-- Partial/new-day summary is hidden. Completed-day summary remains available.
-- Original cool web-theme palette restored: #090B10 background, dark blue-gray cards, teal/purple/yellow accents.
-- Native ETA service, Backup/Restore, Widget, Snackbar Undo, route correction and GitHub release workflow remain.
+## v2.7 UI baseline
+
+This version unifies the whole app around the approved main-screen design:
+
+- simple date/header row (no title tile bar)
+- compact Live ETA panel with 38 / 42C, three upcoming ETAs, countdown + clock time
+- two-column workflow cards with roomy touch targets
+- flat front-view Hong Kong double-decker bus icon drawn natively in Compose
+- colourful, understated icon tiles (not neon / mono)
+- vertical Today timeline using the same card, colour, spacing and icon language
+- sticky purple Smart Next action at the thumb zone
+- Summary and Charts use the same dark navy surfaces, borders and teal/purple/yellow accents
+- Chart remains an independent page with 7d / 30d / 3m / all ranges
+
+## Behaviour retained
+
+- deterministic Smart Next flow
+- second-precision timestamps and durations
+- KMB / government ETA cache + foreground tracking
+- 3 ETA arrivals per route when available
+- backup / restore
+- widget
+- signed Release-only GitHub Actions workflow
+
+## Build
+
+The GitHub workflow is included at `.github/workflows/android-build.yml`.
+It builds the Release APK only and uses repository signing secrets when present.
