@@ -4,6 +4,8 @@ import android.app.job.JobParameters
 import android.app.job.JobService
 import com.quickstamp.timerecorder.data.AppStore
 import com.quickstamp.timerecorder.model.HkTime
+import com.quickstamp.timerecorder.model.EventKind
+import com.quickstamp.timerecorder.model.RecorderEvent
 import com.quickstamp.timerecorder.network.KmbEtaClient
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -15,7 +17,8 @@ class EtaBackgroundJobService : JobService() {
     private var task: Future<*>? = null
 
     override fun onStartJob(params: JobParameters): Boolean {
-        if (AppStore.load(applicationContext).tracking.active) return false
+        val state = AppStore.load(applicationContext)
+        if (state.tracking.active || isRidingToday(state.events)) return false
         task = executor.submit {
             val now = HkTime.now()
             val time = Instant.ofEpochMilli(now).atZone(HkTime.zone).toLocalTime()
@@ -34,6 +37,14 @@ class EtaBackgroundJobService : JobService() {
         task?.cancel(true)
         task = null
         return false
+    }
+
+    private fun isRidingToday(events: List<RecorderEvent>): Boolean {
+        val today = HkTime.today()
+        val day = events.filter { HkTime.date(it.timestamp) == today }.sortedBy { it.timestamp }
+        val lastBus = day.lastOrNull { it.kind == EventKind.BUS } ?: return false
+        val lastAlight = day.lastOrNull { it.label == "落車" }
+        return lastAlight == null || lastBus.timestamp > lastAlight.timestamp
     }
 
     override fun onDestroy() {

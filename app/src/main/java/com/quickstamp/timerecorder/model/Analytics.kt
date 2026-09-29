@@ -74,8 +74,12 @@ object RecorderAnalytics {
         }
 
         fun waits(mode: CommuteMode): Long = waitJourneySamples(day, mode = mode).sumOf { it.durationMs }
-        fun buses(mode: CommuteMode): Long = listOf("38", "42C").sumOf { route ->
-            journeySamples(day, route, mode).sumOf { it.durationMs }
+        fun buses(mode: CommuteMode): Long {
+            val routes = day
+                .filter { it.kind == EventKind.BUS && commuteOf(it) == mode }
+                .mapNotNull { it.route }
+                .distinct()
+            return routes.sumOf { route -> journeySamples(day, route, mode).sumOf { it.durationMs } }
         }
 
         return DaySummary(

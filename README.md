@@ -1,8 +1,8 @@
-# Time Recorder v2.7 — Unified UI
+# Time Recorder v2.8 — Unified UI
 
 Native Android app built with Jetpack Compose. No WebView runtime.
 
-## v2.7 UI baseline
+## v2.8 UI baseline
 
 This version unifies the whole app around the approved main-screen design:
 
@@ -30,3 +30,13 @@ This version unifies the whole app around the approved main-screen design:
 
 The GitHub workflow is included at `.github/workflows/android-build.yml`.
 It builds the Release APK only and uses repository signing secrets when present.
+
+## v2.8 custom vehicle
+
+- Added **其他巴士 / 車** as a real transport event, separate from **其他事**.
+- It uses the same commute flow as 38 / 42C: 到巴士站 → 上車 → 落車.
+- Waiting time and journey duration are calculated normally.
+- Tap records immediately as `上 其他車`; long-press the timeline entry can change only the route/vehicle name (for example 72, 290A, 的士) without changing the timestamp.
+- No note field is added.
+- Fixed 38 / 42C charts stay clean; custom vehicles do not get mixed into those route-specific charts.
+- Daily commute summary includes custom-vehicle journey time under **車程**.

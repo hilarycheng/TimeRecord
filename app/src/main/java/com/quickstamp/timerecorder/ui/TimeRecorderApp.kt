@@ -74,8 +74,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -115,6 +119,7 @@ fun TimeRecorderApp() {
     var lastVersion by remember { mutableStateOf(AppStore.version(context)) }
     var editing by remember { mutableStateOf<RecorderEvent?>(null) }
     var renameTarget by remember { mutableStateOf<RecorderEvent?>(null) }
+    var routeEditTarget by remember { mutableStateOf<RecorderEvent?>(null) }
     var historyOpen by remember { mutableStateOf(false) }
     var backfillOpen by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<TapFeedback?>(null) }
@@ -163,6 +168,8 @@ fun TimeRecorderApp() {
     }
 
     fun refreshEta(mode: CommuteMode) {
+        val todayEvents = state.events.filter { HkTime.date(it.timestamp) == HkTime.today() }.sortedBy { it.timestamp }
+        if (activeRideEvent(todayEvents) != null) return
         io.execute { KmbEtaClient.refresh(context.applicationContext, mode) }
     }
 
@@ -274,6 +281,7 @@ fun TimeRecorderApp() {
         val mode = state.tracking.mode ?: HkTime.modeAt(now, state.settings.morningCutoffHour)
         val snapshot = if (mode == CommuteMode.WORK) state.etaWork else state.etaHome
         val events = state.events.filter { HkTime.date(it.timestamp) == viewedDate }.sortedBy { it.timestamp }
+        val activeRide = activeRideEvent(events)
         val summary = RecorderAnalytics.daySummary(events, viewedDate)
         val isToday = viewedDate == today
         // Completion is scoped to the viewed calendar day. A new day always starts with controls visible.
@@ -315,7 +323,13 @@ fun TimeRecorderApp() {
                 }
 
                 if (showLiveControls) {
-                    item { EtaPanel(mode = mode, snapshot = snapshot, now = now, tracking = state.tracking.active) }
+                    item {
+                        if (activeRide != null) {
+                            RideProgressLine(activeRide, now)
+                        } else {
+                            EtaPanel(mode = mode, snapshot = snapshot, now = now, tracking = state.tracking.active)
+                        }
+                    }
 
                     item {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -366,6 +380,15 @@ fun TimeRecorderApp() {
                                 showTimePicker(context, viewedDate, now) { recordAction("上 42C", EventKind.BUS, "42C", timestamp = it, manual = true) }
                             })
                         }
+                    }
+                    item {
+                        OtherVehicleTile(
+                            feedback = feedbackFor(feedback, "其他車"),
+                            onClick = { recordAction("上 其他車", EventKind.BUS, "其他車") },
+                            onLongClick = {
+                                showTimePicker(context, viewedDate, now) { recordAction("上 其他車", EventKind.BUS, "其他車", timestamp = it, manual = true) }
+                            },
+                        )
                     }
                     item {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -425,6 +448,10 @@ fun TimeRecorderApp() {
                 editing = null
                 reload()
             },
+            onCustomRoute = {
+                editing = null
+                routeEditTarget = event
+            },
             onDelete = { AppStore.deleteEvent(context, event.id); editing = null; reload() },
         )
     }
@@ -434,6 +461,18 @@ fun TimeRecorderApp() {
             initial = event.label,
             onDismiss = { renameTarget = null },
             onSave = { name -> AppStore.updateEvent(context, event.copy(label = name)); renameTarget = null; reload() },
+        )
+    }
+
+    routeEditTarget?.let { event ->
+        RouteDialog(
+            initial = event.route?.takeUnless { it == "38" || it == "42C" || it == "其他車" }.orEmpty(),
+            onDismiss = { routeEditTarget = null },
+            onSave = { route ->
+                AppStore.updateEvent(context, event.copy(route = route, label = "上 $route"))
+                routeEditTarget = null
+                reload()
+            },
         )
     }
 
@@ -462,6 +501,8 @@ private fun DateHeader(
     onHistory: () -> Unit,
     onSettings: () -> Unit,
 ) {
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val titleFontSize = (18f / fontScale).sp
     Row(
         Modifier.fillMaxWidth().height(58.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -472,9 +513,12 @@ private fun DateHeader(
             HkTime.displayDate(date),
             modifier = Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onPickDate),
             textAlign = TextAlign.Center,
-            fontSize = 20.sp,
+            fontSize = titleFontSize,
             fontWeight = FontWeight.Black,
             color = WebInk,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
         )
         HeaderIconButton("›", onNext)
         HeaderIconButton("▥", onHistory, caption = "圖表")
@@ -527,18 +571,58 @@ private fun EtaPanel(mode: CommuteMode, snapshot: EtaSnapshot, now: Long, tracki
                 EtaRouteCard("38", snapshot, now, WebBus, Modifier.weight(1f))
                 EtaRouteCard("42C", snapshot, now, Color(0xFFA88BFF), Modifier.weight(1f))
             }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(status, fontSize = 9.sp, color = when {
-                    snapshot.refreshingStartedAt > 0L -> WebBus
-                    snapshot.errorAt > snapshot.updatedAt -> WebDanger
-                    tracking && age <= 95_000L -> WebGood
-                    else -> WebMuted
-                })
-                if (snapshot.updatedAt > 0L) Text(" · 更新於 ${HkTime.formatTime(snapshot.updatedAt, false)}", fontSize = 9.sp, color = WebDim)
+            val statusColor = when {
+                snapshot.refreshingStartedAt > 0L -> WebBus
+                snapshot.errorAt > snapshot.updatedAt -> WebDanger
+                tracking && age <= 95_000L -> WebGood
+                else -> WebMuted
             }
-            if (remarks.isNotEmpty()) remarks.forEach { Text("• $it", fontSize = 9.sp, color = WebWarm) }
+            val statusLine = buildAnnotatedString {
+                withStyle(SpanStyle(color = statusColor)) { append(status) }
+                if (snapshot.updatedAt > 0L) {
+                    withStyle(SpanStyle(color = WebDim)) { append(" · 更新於 ${HkTime.formatTime(snapshot.updatedAt, false)}") }
+                }
+                if (remarks.isNotEmpty()) {
+                    withStyle(SpanStyle(color = WebWarm)) { append(" · ${remarks.joinToString(" · ")}") }
+                }
+            }
+            Text(
+                statusLine,
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = 9.sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
+}
+
+@Composable
+private fun RideProgressLine(event: RecorderEvent, now: Long) {
+    val route = event.route?.takeIf { it.isNotBlank() } ?: event.label.removePrefix("上 ").ifBlank { "其他車" }
+    ColorGradientCard(
+        colors = listOf(Color(0xFF131A26), Color(0xFF151C2A), Color(0xFF111721)),
+        border = Color(0xFF273449),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Text(
+            "$route · 車程 ${HkTime.formatDurationReadable(now - event.timestamp)}",
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 13.dp),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Black,
+            color = WebInk,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun activeRideEvent(events: List<RecorderEvent>): RecorderEvent? {
+    val lastBus = events.lastOrNull { it.kind == EventKind.BUS } ?: return null
+    val lastAlight = events.lastOrNull { it.label == "落車" }
+    return if (lastAlight == null || lastBus.timestamp > lastAlight.timestamp) lastBus else null
 }
 
 @Composable
@@ -740,6 +824,37 @@ private fun BusTile(text: String, modifier: Modifier, feedback: String?, onClick
     }
 }
 
+@Composable
+private fun OtherVehicleTile(feedback: String?, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val accent = Color(0xFFF0BE62)
+    PressableTile(
+        modifier = Modifier.fillMaxWidth().height(76.dp),
+        shape = RoundedCornerShape(18.dp),
+        colors = listOf(Color(0xFF2B2418), Color(0xFF1D1B19)),
+        border = accent.copy(alpha = 0.42f),
+        onClick = onClick,
+        onLongClick = onLongClick,
+    ) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                modifier = Modifier.size(42.dp),
+                shape = RoundedCornerShape(13.dp),
+                color = Color(0xFF3A3020),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("車", color = Color(0xFFFFD889), fontSize = 17.sp, fontWeight = FontWeight.Black)
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("其他巴士 / 車", fontSize = 18.sp, fontWeight = FontWeight.Black, color = Color(0xFFFFD889))
+                Text(feedback ?: "同樣計等車同車程", fontSize = 10.sp, color = if (feedback != null) WebGood else Color(0xFFB6A989))
+            }
+            Text("›", color = accent, fontSize = 28.sp)
+        }
+    }
+}
+
 private enum class UtilityStyle { Warm, Accent, Neutral }
 
 @Composable
@@ -771,12 +886,14 @@ private fun SmartNextBar(
         border = androidx.compose.foundation.BorderStroke(1.dp, WebLine),
     ) {
         if (viewedDate != today) {
-            SmartButton("返回今日", Modifier.fillMaxWidth().padding(8.dp), onReturnToday)
+            SmartButton("返回今日", Modifier.fillMaxWidth().padding(8.dp)) { onReturnToday() }
         } else when (next) {
             is NextAction.Single -> SmartButton("下一步 · ${next.action.label}", Modifier.fillMaxWidth().padding(8.dp)) { onAction(next.action) }
-            NextAction.BusChoices -> Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SmartButton("38 上車", Modifier.weight(1f)) { onBus("38") }
-                SmartButton("42C 上車", Modifier.weight(1f)) { onBus("42C") }
+            NextAction.BusChoices -> Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmartButton("其他事", Modifier.weight(1f), compact = true) { onAction(WorkflowAction("其他事", EventKind.EXTRA)) }
+                SmartButton("38", Modifier.weight(1f), compact = true) { onBus("38") }
+                SmartButton("42C", Modifier.weight(1f), compact = true) { onBus("42C") }
+                SmartButton("其他車", Modifier.weight(1f), compact = true) { onBus("其他車") }
             }
             NextAction.Done -> Box(Modifier.fillMaxWidth().height(62.dp), contentAlignment = Alignment.Center) {
                 Text("✓ 今日完成", color = WebGood, fontWeight = FontWeight.Black, fontSize = 17.sp)
@@ -786,7 +903,7 @@ private fun SmartNextBar(
 }
 
 @Composable
-private fun SmartButton(text: String, modifier: Modifier, onClick: () -> Unit) {
+private fun SmartButton(text: String, modifier: Modifier, compact: Boolean = false, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.97f else 1f, label = "smart")
@@ -804,7 +921,7 @@ private fun SmartButton(text: String, modifier: Modifier, onClick: () -> Unit) {
                 onLongClick = {},
             ),
         contentAlignment = Alignment.Center,
-    ) { Text(text, color = Color.White, fontWeight = FontWeight.Black, fontSize = 19.sp) }
+    ) { Text(text, color = Color.White, fontWeight = FontWeight.Black, fontSize = if (compact) 14.sp else 19.sp, maxLines = 1) }
 }
 
 @Composable
@@ -904,8 +1021,13 @@ private fun TimelineEventRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = RoundedCornerShape(9.dp), color = Color(0xFF202B3D), modifier = Modifier.size(32.dp)) {
                     Box(contentAlignment = Alignment.Center) {
-                        if (event.kind == EventKind.BUS) DoubleDeckerBusIcon(Modifier.size(22.dp))
-                        else Text(eventIcon(event), fontSize = 17.sp, color = WebInk)
+                        if (event.kind == EventKind.BUS && event.route in setOf("38", "42C")) {
+                            DoubleDeckerBusIcon(Modifier.size(22.dp))
+                        } else if (event.kind == EventKind.BUS) {
+                            Text("車", fontSize = 13.sp, color = WebWarm, fontWeight = FontWeight.Black)
+                        } else {
+                            Text(eventIcon(event), fontSize = 17.sp, color = WebInk)
+                        }
                     }
                 }
                 Spacer(Modifier.width(9.dp))
@@ -943,8 +1065,8 @@ private fun eventIcon(event: RecorderEvent): String = when {
 private fun timelineSecondary(event: RecorderEvent, duration: String, isLive: Boolean): String = when {
     event.terminal -> "今日行程完成"
     event.kind == EventKind.STOP -> "等車 $duration"
-    event.kind == EventKind.BUS && isLive -> "巴士 · 進行中 $duration"
-    event.kind == EventKind.BUS -> "巴士 · $duration"
+    event.kind == EventKind.BUS && isLive -> "${if (event.route in setOf("38", "42C")) "巴士" else "車程"} · 進行中 $duration"
+    event.kind == EventKind.BUS -> "${if (event.route in setOf("38", "42C")) "巴士" else "車程"} · $duration"
     event.label == "返工" -> "已開始今日嘅行程"
     isLive -> "進行中 $duration"
     else -> "持續 $duration"
@@ -973,7 +1095,7 @@ private fun TimelinePredictedRow(label: String, hasEvents: Boolean) {
 
 private fun nextActionLabel(next: NextAction): String? = when (next) {
     is NextAction.Single -> next.action.label
-    NextAction.BusChoices -> "上 38 / 42C"
+    NextAction.BusChoices -> "其他事 / 38 / 42C / 其他車"
     NextAction.Done -> null
 }
 
@@ -1014,7 +1136,7 @@ private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate, compl
                 color = WebBus,
                 sub1Label = "等車",
                 sub1Value = HkTime.formatDurationReadable(summary.workWaitMs),
-                sub2Label = "巴士",
+                sub2Label = "車程",
                 sub2Value = HkTime.formatDurationReadable(summary.workBusMs),
             )
             SummaryMainBlock(
@@ -1028,7 +1150,7 @@ private fun TodaySummaryCard(events: List<RecorderEvent>, date: LocalDate, compl
                 color = WebBus,
                 sub1Label = "等車",
                 sub1Value = HkTime.formatDurationReadable(summary.homeWaitMs),
-                sub2Label = "巴士",
+                sub2Label = "車程",
                 sub2Value = HkTime.formatDurationReadable(summary.homeBusMs),
             )
 
@@ -1153,6 +1275,7 @@ private fun EntryActionsDialog(
     onRename: () -> Unit,
     onTime: () -> Unit,
     onRoute: (String) -> Unit,
+    onCustomRoute: () -> Unit,
     onDelete: () -> Unit,
 ) {
     AlertDialog(
@@ -1161,9 +1284,13 @@ private fun EntryActionsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (event.kind == EventKind.BUS) {
-                    val alternate = if (event.route == "38") "42C" else "38"
-                    Button(onClick = { onRoute(alternate) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = WebBus)) {
-                        Text("只改巴士號碼 → $alternate")
+                    Text("只改車號 / 車名，時間不變", fontSize = 10.sp, color = WebMuted)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { onRoute("38") }, modifier = Modifier.weight(1f), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebBus)) { Text("38") }
+                        OutlinedButton(onClick = { onRoute("42C") }, modifier = Modifier.weight(1f), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebAccent2)) { Text("42C") }
+                    }
+                    Button(onClick = onCustomRoute, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebWarmSoft, contentColor = WebWarm)) {
+                        Text("其他巴士 / 車 · 改車號或車名")
                     }
                 }
                 Button(onClick = onRename, modifier = Modifier.fillMaxWidth()) { Text("改名稱") }
@@ -1189,9 +1316,28 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onSave: (String
 }
 
 @Composable
+private fun RouteDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var route by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("車號 / 車名", color = WebInk) },
+        text = {
+            OutlinedTextField(
+                value = route,
+                onValueChange = { route = it },
+                singleLine = true,
+                placeholder = { Text("例如 72、290A、的士") },
+            )
+        },
+        confirmButton = { TextButton(onClick = { if (route.isNotBlank()) onSave(route.trim()) }) { Text("儲存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
 private fun BackfillDialog(onDismiss: () -> Unit, onSelect: (String, EventKind, String?, Boolean) -> Unit) {
     val entries = listOf(
-        Backfill("返工"), Backfill("到巴士站", EventKind.STOP), Backfill("上 38", EventKind.BUS, "38"), Backfill("上 42C", EventKind.BUS, "42C"),
+        Backfill("返工"), Backfill("到巴士站", EventKind.STOP), Backfill("上 38", EventKind.BUS, "38"), Backfill("上 42C", EventKind.BUS, "42C"), Backfill("上 其他車", EventKind.BUS, "其他車"),
         Backfill("到餐廳"), Backfill("到公司"), Backfill("放工"), Backfill("落車"), Backfill("到屋企", terminal = true), Backfill("其他事", EventKind.EXTRA),
     )
     AlertDialog(

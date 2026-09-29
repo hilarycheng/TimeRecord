@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 14
-        versionName = "2.7-unified-ui"
+        versionCode = 16
+        versionName = "2.9-ui-flow-fix"
     }
 
     buildFeatures {

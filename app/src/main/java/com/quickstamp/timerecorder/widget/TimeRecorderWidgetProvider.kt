@@ -36,7 +36,12 @@ class TimeRecorderWidgetProvider : AppWidgetProvider() {
                         next.action.route,
                         next.action.terminal,
                     )
-                    else -> Unit
+                    NextAction.BusChoices -> {
+                        context.startActivity(
+                            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                    NextAction.Done -> Unit
                 }
                 updateAll(context)
             }
@@ -83,7 +88,7 @@ class TimeRecorderWidgetProvider : AppWidgetProvider() {
                 R.id.widget_smart,
                 when (next) {
                     is NextAction.Single -> "下一步 · ${next.action.label}"
-                    NextAction.BusChoices -> "下一步 · 揀 38 / 42C"
+                    NextAction.BusChoices -> "下一步 · 揀車（38 / 42C / 其他）"
                     NextAction.Done -> "今日完成"
                 }
             )
