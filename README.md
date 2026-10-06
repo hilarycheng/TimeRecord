@@ -61,3 +61,8 @@ Release signing uses repository secrets already supported by this project.
 - Clock-style full-screen ringing Activity with Snooze / Stop.
 - Full-screen intent notification fallback to heads-up when system access is unavailable.
 - First Smart Next label is `開始返工`; all other Smart Next labels are unchanged.
+
+## v2.14.1 build fix
+
+- Removed invalid alarm-theme `windowShowWhenLocked` / `windowTurnScreenOn` XML attributes; the ringing Activity continues to use `setShowWhenLocked(true)` and `setTurnScreenOn(true)` at runtime.
+- Removed Compose `Modifier.weight()` usage from the ringing screen and uses explicit equal button widths instead.

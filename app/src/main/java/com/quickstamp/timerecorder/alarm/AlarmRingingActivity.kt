@@ -13,12 +13,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -143,10 +143,12 @@ private fun AlarmRingingScreen(
             .padding(horizontal = 24.dp, vertical = 34.dp),
     ) {
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .padding(top = 72.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(72.dp))
             Text(
                 text = alarm.time.format(DateTimeFormatter.ofPattern("HH:mm")),
                 color = ClockInk,
@@ -157,24 +159,30 @@ private fun AlarmRingingScreen(
                 softWrap = false,
                 textAlign = TextAlign.Center,
             )
-            Spacer(Modifier.height(12.dp))
             Text(
                 text = alarm.label.ifBlank { "Alarm" },
                 color = ClockInk,
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
+                modifier = Modifier.padding(top = 12.dp),
             )
-            Spacer(Modifier.height(8.dp))
             Text(
                 text = HkTime.today().format(DateTimeFormatter.ofPattern("EEE, d MMM", Locale.ENGLISH)),
                 color = ClockMuted,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(top = 8.dp),
             )
+        }
 
-            Spacer(Modifier.weight(1f))
-
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 36.dp),
+        ) {
+            val buttonWidth = (maxWidth - 14.dp) / 2
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -183,18 +191,17 @@ private fun AlarmRingingScreen(
                     text = "Snooze",
                     background = ClockSnooze,
                     foreground = ClockInk,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.width(buttonWidth),
                     onClick = onSnooze,
                 )
                 AlarmPill(
                     text = "Stop",
                     background = ClockStop,
                     foreground = ClockStopInk,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.width(buttonWidth),
                     onClick = onStop,
                 )
             }
-            Spacer(Modifier.height(36.dp))
         }
     }
 }
