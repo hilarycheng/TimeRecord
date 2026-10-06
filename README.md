@@ -1,4 +1,4 @@
-# Time Recorder v2.11 — Audio Profiles
+# Time Recorder v2.12 — Audio Profiles
 
 Native Android / Jetpack Compose personal commute recorder.
 
@@ -12,7 +12,8 @@ Native Android / Jetpack Compose personal commute recorder.
 Menu → **Audio Profiles**
 
 - `Default` profile for Saturday / Sunday / Hong Kong public holidays
-- Three Working Day profiles (defaults: Morning 07:00, Office 09:00, After Work 18:00)
+- Two Working Day profiles (defaults: Office 09:00, After Work 18:00)
+- Before the Office time on a Working Day, the active profile is Default
 - Each profile controls Ring, Notification, Media, Alarm and System volume levels
 - Profile times and levels are stored in AndroidX Preferences DataStore
 - Uses `Asia/Hong_Kong` for all schedule / holiday decisions

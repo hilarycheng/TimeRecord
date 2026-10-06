@@ -155,7 +155,6 @@ fun AudioProfilePage(
             Text("Profiles", fontSize = 12.sp, color = WebMuted, fontWeight = FontWeight.Black)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 ProfileChip("Default", selected == AudioProfileId.DEFAULT, Modifier.weight(1f)) { selected = AudioProfileId.DEFAULT }
-                ProfileChip("Morning", selected == AudioProfileId.MORNING, Modifier.weight(1f)) { selected = AudioProfileId.MORNING }
                 ProfileChip("Office", selected == AudioProfileId.OFFICE, Modifier.weight(1f)) { selected = AudioProfileId.OFFICE }
                 ProfileChip("After", selected == AudioProfileId.AFTER_WORK, Modifier.weight(1f)) { selected = AudioProfileId.AFTER_WORK }
             }
@@ -246,7 +245,7 @@ fun AudioProfilePage(
             ) {
                 Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Schedule rule", fontSize = 13.sp, fontWeight = FontWeight.Black, color = WebInk)
-                    Text("Mon–Fri + 非香港公眾假期 → 跟 3 個 Working Day profiles\nSat / Sun / 香港公眾假期 → Default", fontSize = 11.sp, lineHeight = 18.sp, color = WebMuted)
+                    Text("Mon–Fri + 非香港公眾假期 → Office / After Work\nOffice 時間前 → Default\nSat / Sun / 香港公眾假期 → Default", fontSize = 11.sp, lineHeight = 18.sp, color = WebMuted)
                     Text("部分 Android 手機會由系統將 Ring / Notification 音量綁定。", fontSize = 9.sp, color = WebDim)
                     HorizontalDivider(color = WebLine)
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -336,14 +335,12 @@ private fun VolumeSlider(
 
 private fun updateLevels(config: AudioScheduleConfig, id: AudioProfileId, levels: AudioLevels): AudioScheduleConfig = when (id) {
     AudioProfileId.DEFAULT -> config.copy(defaultLevels = levels)
-    AudioProfileId.MORNING -> config.copy(morning = config.morning.copy(levels = levels))
     AudioProfileId.OFFICE -> config.copy(office = config.office.copy(levels = levels))
     AudioProfileId.AFTER_WORK -> config.copy(afterWork = config.afterWork.copy(levels = levels))
 }
 
 private fun updateTime(config: AudioScheduleConfig, id: AudioProfileId, time: LocalTime): AudioScheduleConfig = when (id) {
     AudioProfileId.DEFAULT -> config
-    AudioProfileId.MORNING -> config.copy(morning = config.morning.copy(time = time))
     AudioProfileId.OFFICE -> config.copy(office = config.office.copy(time = time))
     AudioProfileId.AFTER_WORK -> config.copy(afterWork = config.afterWork.copy(time = time))
 }

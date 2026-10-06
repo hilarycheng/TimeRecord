@@ -2,7 +2,7 @@ package com.quickstamp.timerecorder.audio
 
 import java.time.LocalTime
 
-enum class AudioProfileId { DEFAULT, MORNING, OFFICE, AFTER_WORK }
+enum class AudioProfileId { DEFAULT, OFFICE, AFTER_WORK }
 
 data class AudioLevels(
     val ring: Int,
@@ -31,9 +31,6 @@ data class AudioScheduleConfig(
     val enabled: Boolean = false,
     val enforceOnAppOpen: Boolean = true,
     val defaultLevels: AudioLevels = AudioLevels(70, 70, 50, 80, 50),
-    val morning: ScheduledAudioProfile = ScheduledAudioProfile(
-        AudioProfileId.MORNING, "Morning", LocalTime.of(7, 0), AudioLevels(70, 70, 30, 80, 50)
-    ),
     val office: ScheduledAudioProfile = ScheduledAudioProfile(
         AudioProfileId.OFFICE, "Office", LocalTime.of(9, 0), AudioLevels(30, 20, 10, 80, 20)
     ),
@@ -41,9 +38,8 @@ data class AudioScheduleConfig(
         AudioProfileId.AFTER_WORK, "After Work", LocalTime.of(18, 0), AudioLevels(70, 70, 50, 80, 50)
     ),
 ) {
-    fun scheduled(): List<ScheduledAudioProfile> = listOf(morning, office, afterWork).sortedBy { it.time }
+    fun scheduled(): List<ScheduledAudioProfile> = listOf(office, afterWork).sortedBy { it.time }
     fun profile(id: AudioProfileId): ScheduledAudioProfile? = when (id) {
-        AudioProfileId.MORNING -> morning
         AudioProfileId.OFFICE -> office
         AudioProfileId.AFTER_WORK -> afterWork
         AudioProfileId.DEFAULT -> null

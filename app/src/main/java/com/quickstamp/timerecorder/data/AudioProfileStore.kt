@@ -40,7 +40,6 @@ object AudioProfileStore {
             enabled = p[ENABLED] ?: false,
             enforceOnAppOpen = p[ENFORCE_OPEN] ?: true,
             defaultLevels = levels(AudioProfileId.DEFAULT, defaults.defaultLevels),
-            morning = scheduled(defaults.morning),
             office = scheduled(defaults.office),
             afterWork = scheduled(defaults.afterWork),
         )

@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 18
-        versionName = "2.11-audio-profiles"
+        versionCode = 19
+        versionName = "2.12-audio-profiles"
     }
 
     buildFeatures {
