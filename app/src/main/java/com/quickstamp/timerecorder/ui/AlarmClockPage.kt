@@ -1,8 +1,12 @@
 package com.quickstamp.timerecorder.ui
 
 import android.Manifest
+import android.app.NotificationManager
 import android.app.TimePickerDialog
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +36,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +48,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import com.quickstamp.timerecorder.alarm.AlarmClockScheduler
 import com.quickstamp.timerecorder.alarm.AlarmClockStore
 import com.quickstamp.timerecorder.alarm.AlarmPlaybackService
@@ -63,6 +71,22 @@ fun AlarmClockPage(onBack: () -> Unit) {
     }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         notificationGranted = granted
+    }
+    var fullScreenGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < 34 ||
+                context.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+        )
+    }
+    DisposableEffect(context) {
+        val owner = context as? LifecycleOwner
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && Build.VERSION.SDK_INT >= 34) {
+                fullScreenGranted = context.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+            }
+        }
+        owner?.lifecycle?.addObserver(observer)
+        onDispose { owner?.lifecycle?.removeObserver(observer) }
     }
 
     fun refresh() { alarms = AlarmClockStore.load(context) }
@@ -144,6 +168,23 @@ fun AlarmClockPage(onBack: () -> Unit) {
                     text = "鬧鐘響時會用持續 Alarm notification 提供 Snooze / Dismiss。",
                     button = "Grant",
                     onClick = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                )
+            }
+            if (!fullScreenGranted && Build.VERSION.SDK_INT >= 34) {
+                AlarmPermissionCard(
+                    title = "需要 Full-screen alarm 權限",
+                    text = "鎖屏／熄屏時用 Clock-style 全屏 Alarm 顯示 Snooze / Stop。",
+                    button = "Grant",
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                    Uri.parse("package:${context.packageName}"),
+                                )
+                            )
+                        }
+                    },
                 )
             }
 

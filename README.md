@@ -42,7 +42,7 @@ GitHub Actions workflow: `.github/workflows/android-build.yml`
 
 Release signing uses repository secrets already supported by this project.
 
-## v2.13 Explicit Alarms
+## v2.14 Explicit Alarms
 
 - Alarms are never created automatically. They only exist after the user taps **Alarms → + Add** and enables them.
 - Multiple alarms are supported.
@@ -54,3 +54,10 @@ Release signing uses repository secrets already supported by this project.
 - Dismiss, Snooze (10 minutes), 30-minute timeout, app recovery, or reboot restores the alarm stream.
 - If an Audio Profile changes while an alarm is ringing, the profile's requested Alarm level is deferred and becomes the restore target after the alarm stops.
 - Existing Android Clock / third-party alarms are not read, edited, enabled, disabled, or cancelled by Time Recorder.
+
+
+## v2.14
+
+- Clock-style full-screen ringing Activity with Snooze / Stop.
+- Full-screen intent notification fallback to heads-up when system access is unavailable.
+- First Smart Next label is `開始返工`; all other Smart Next labels are unchanged.

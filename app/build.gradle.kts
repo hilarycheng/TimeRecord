@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 20
-        versionName = "2.13-explicit-alarms"
+        versionCode = 21
+        versionName = "2.14-clock-ringing"
     }
 
     buildFeatures {

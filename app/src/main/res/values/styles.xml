@@ -9,4 +9,19 @@
         <item name="android:navigationBarColor">#0B0D12</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+
+    <style name="Theme.TimeRecorder.Alarm" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowShowWhenLocked">true</item>
+        <item name="android:windowTurnScreenOn">true</item>
+        <item name="android:colorAccent">#C5C9FF</item>
+        <item name="android:windowBackground">#101114</item>
+        <item name="android:statusBarColor">#101114</item>
+        <item name="android:navigationBarColor">#101114</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
 </resources>

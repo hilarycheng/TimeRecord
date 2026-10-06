@@ -933,7 +933,10 @@ private fun SmartNextBar(
         if (viewedDate != today) {
             SmartButton("返回今日", Modifier.fillMaxWidth().padding(8.dp)) { onReturnToday() }
         } else when (next) {
-            is NextAction.Single -> SmartButton("下一步 · ${next.action.label}", Modifier.fillMaxWidth().padding(8.dp)) { onAction(next.action) }
+            is NextAction.Single -> SmartButton(
+                if (next.action.label == "返工") "開始返工" else "下一步 · ${next.action.label}",
+                Modifier.fillMaxWidth().padding(8.dp),
+            ) { onAction(next.action) }
             NextAction.BusChoices -> Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 SmartButton("其他事", Modifier.weight(1f), compact = true) { onAction(WorkflowAction("其他事", EventKind.EXTRA)) }
                 SmartButton("38", Modifier.weight(1f), compact = true) { onBus("38") }

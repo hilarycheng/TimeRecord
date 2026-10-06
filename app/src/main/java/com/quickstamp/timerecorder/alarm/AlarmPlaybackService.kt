@@ -14,7 +14,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import com.quickstamp.timerecorder.MainActivity
 
 class AlarmPlaybackService : Service() {
     companion object {
@@ -94,10 +93,12 @@ class AlarmPlaybackService : Service() {
     }
 
     private fun buildNotification(alarm: UserAlarm): Notification {
-        val open = PendingIntent.getActivity(
+        val fullScreen = PendingIntent.getActivity(
             this,
-            900,
-            Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_ALARMS, true).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            (alarm.id.hashCode() xor 0x5A17) and 0x7fffffff,
+            Intent(this, AlarmRingingActivity::class.java)
+                .putExtra(AlarmClockReceiver.EXTRA_ALARM_ID, alarm.id)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         fun actionPending(action: String, salt: Int) = PendingIntent.getBroadcast(
@@ -110,7 +111,8 @@ class AlarmPlaybackService : Service() {
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(alarm.label.ifBlank { "Alarm" })
             .setContentText("${alarm.time} · Alarm volume ${alarm.ringVolume}%")
-            .setContentIntent(open)
+            .setContentIntent(fullScreen)
+            .setFullScreenIntent(fullScreen, true)
             .setCategory(Notification.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)

@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
         android:allowBackup="true"
@@ -16,6 +17,15 @@
         android:icon="@android:drawable/ic_menu_recent_history"
         android:theme="@style/Theme.TimeRecorder"
         android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".alarm.AlarmRingingActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.TimeRecorder.Alarm" />
 
         <activity
             android:name=".MainActivity"
