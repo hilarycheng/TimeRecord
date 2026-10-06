@@ -1,10 +1,14 @@
 package com.quickstamp.timerecorder
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.lifecycle.lifecycleScope
+import com.quickstamp.timerecorder.audio.AudioProfileManager
 import com.quickstamp.timerecorder.data.AppStore
+import com.quickstamp.timerecorder.data.HolidayCalendarStore
 import com.quickstamp.timerecorder.model.HkTime
 import com.quickstamp.timerecorder.model.EventKind
 import com.quickstamp.timerecorder.network.KmbEtaClient
@@ -18,14 +22,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    private val audioProfileRequestSignal = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        consumeNavigationIntent(intent)
 
-        // Keep cold start deliberately boring: no legacy migration, JobScheduler or network
-        // work before the first Compose frame is installed.
         setContent {
             TimeRecorderTheme {
-                TimeRecorderApp()
+                TimeRecorderApp(audioProfileRequestSignal = audioProfileRequestSignal.intValue)
             }
         }
 
@@ -33,6 +38,19 @@ class MainActivity : ComponentActivity() {
             delay(1_500L)
             runCatching { AppStore.autoClosePastDays(applicationContext) }
             runCatching { EtaServiceController.scheduleBackgroundRefresh(applicationContext) }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeNavigationIntent(intent)
+    }
+
+    private fun consumeNavigationIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(AudioProfileManager.EXTRA_OPEN_AUDIO_PROFILE, false) == true) {
+            audioProfileRequestSignal.intValue += 1
+            intent.removeExtra(AudioProfileManager.EXTRA_OPEN_AUDIO_PROFILE)
         }
     }
 
@@ -46,6 +64,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+
+        lifecycleScope.launch {
+            runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
+            val holidayCache = HolidayCalendarStore.load(applicationContext)
+            if (HolidayCalendarStore.shouldRefresh(holidayCache)) {
+                withContext(Dispatchers.IO) {
+                    runCatching { HolidayCalendarStore.refresh(applicationContext) }
+                }
+                runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
+            }
+        }
+
         lifecycleScope.launch {
             val state = runCatching { AppStore.load(applicationContext) }.getOrNull() ?: return@launch
             if (state.tracking.active && state.tracking.mode != null) {

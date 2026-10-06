@@ -111,7 +111,7 @@ private data class TapFeedback(val key: String, val text: String, val timestamp:
 private enum class HistoryRange(val days: Long?) { DAYS_7(7), DAYS_30(30), DAYS_90(90), ALL(null) }
 
 @Composable
-fun TimeRecorderApp() {
+fun TimeRecorderApp(audioProfileRequestSignal: Int = 0) {
     val context = LocalContext.current
     var state by remember { mutableStateOf(AppStore.load(context)) }
     var now by remember { mutableLongStateOf(HkTime.now()) }
@@ -122,12 +122,22 @@ fun TimeRecorderApp() {
     var routeEditTarget by remember { mutableStateOf<RecorderEvent?>(null) }
     var historyOpen by remember { mutableStateOf(false) }
     var calendarOpen by remember { mutableStateOf(false) }
+    var audioProfileOpen by remember { mutableStateOf(false) }
     var backfillOpen by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<TapFeedback?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val io = remember { Executors.newSingleThreadExecutor() }
     val snackbar = remember { SnackbarHostState() }
+
+    LaunchedEffect(audioProfileRequestSignal) {
+        if (audioProfileRequestSignal > 0) {
+            audioProfileOpen = true
+            calendarOpen = false
+            historyOpen = false
+            if (drawerState.isOpen) drawerState.close()
+        }
+    }
 
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -242,11 +252,15 @@ fun TimeRecorderApp() {
         scope.launch { drawerState.close() }
     }
 
-    BackHandler(enabled = calendarOpen && drawerState.isClosed) {
+    BackHandler(enabled = audioProfileOpen && drawerState.isClosed) {
+        audioProfileOpen = false
+    }
+
+    BackHandler(enabled = calendarOpen && !audioProfileOpen && drawerState.isClosed) {
         calendarOpen = false
     }
 
-    BackHandler(enabled = historyOpen && !calendarOpen && drawerState.isClosed) {
+    BackHandler(enabled = historyOpen && !calendarOpen && !audioProfileOpen && drawerState.isClosed) {
         historyOpen = false
     }
 
@@ -263,8 +277,9 @@ fun TimeRecorderApp() {
                     refreshEta(mode)
                     scope.launch { drawerState.close() }
                 },
-                onCalendar = { calendarOpen = true; historyOpen = false; scope.launch { drawerState.close() } },
-                onHistory = { historyOpen = true; calendarOpen = false; scope.launch { drawerState.close() } },
+                onAudioProfiles = { audioProfileOpen = true; calendarOpen = false; historyOpen = false; scope.launch { drawerState.close() } },
+                onCalendar = { calendarOpen = true; audioProfileOpen = false; historyOpen = false; scope.launch { drawerState.close() } },
+                onHistory = { historyOpen = true; calendarOpen = false; audioProfileOpen = false; scope.launch { drawerState.close() } },
                 onBackup = {
                     backupLauncher.launch("time-recorder-backup-${HkTime.today()}.json")
                     scope.launch { drawerState.close() }
@@ -280,7 +295,9 @@ fun TimeRecorderApp() {
             )
         }
     ) {
-        if (calendarOpen) {
+        if (audioProfileOpen) {
+            AudioProfilePage(now = now, onBack = { audioProfileOpen = false })
+        } else if (calendarOpen) {
             HolidayCalendarPage(context = context, onBack = { calendarOpen = false })
         } else if (historyOpen) {
             HistoryPage(state = state, onBack = { historyOpen = false })
@@ -1225,6 +1242,7 @@ private fun SettingsDrawer(
     state: RecorderState,
     onSeconds: (Boolean) -> Unit,
     onRefresh: () -> Unit,
+    onAudioProfiles: () -> Unit,
     onCalendar: () -> Unit,
     onHistory: () -> Unit,
     onBackup: () -> Unit,
@@ -1253,6 +1271,9 @@ private fun SettingsDrawer(
             Text("返工：德福花園\n放工：屏麗徑南行\n38 / 42C · 政府 / KMB raw ETA · 60 秒 tracking", fontSize = 12.sp, lineHeight = 19.sp, color = WebInk)
             Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = Color(0xFFA5F5E9))) {
                 Text("立即更新 ETA", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(onClick = onAudioProfiles, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebBus)) {
+                Text("Audio Profiles", fontWeight = FontWeight.Bold)
             }
             OutlinedButton(onClick = onCalendar, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF9EC6))) {
                 Text("Calendar · 香港公眾假期", fontWeight = FontWeight.Bold)

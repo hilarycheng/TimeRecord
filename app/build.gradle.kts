@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 17
-        versionName = "2.10-holiday-calendar"
+        versionCode = 18
+        versionName = "2.11-audio-profiles"
     }
 
     buildFeatures {
@@ -71,6 +71,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

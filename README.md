@@ -1,52 +1,42 @@
-# Time Recorder v2.8 — Unified UI
+# Time Recorder v2.11 — Audio Profiles
 
-Native Android app built with Jetpack Compose. No WebView runtime.
+Native Android / Jetpack Compose personal commute recorder.
 
-## v2.8 UI baseline
+## Existing features retained
+- Hong Kong KMB 38 / 42C ETA, foreground tracking, cache countdown
+- Timeline, Smart Next, custom vehicle, history/charts, widget
+- Hong Kong public holiday calendar from official 1823 iCal
+- JSON backup / restore
 
-This version unifies the whole app around the approved main-screen design:
+## Audio Profile Scheduler
+Menu → **Audio Profiles**
 
-- simple date/header row (no title tile bar)
-- compact Live ETA panel with 38 / 42C, three upcoming ETAs, countdown + clock time
-- two-column workflow cards with roomy touch targets
-- flat front-view Hong Kong double-decker bus icon drawn natively in Compose
-- colourful, understated icon tiles (not neon / mono)
-- vertical Today timeline using the same card, colour, spacing and icon language
-- sticky purple Smart Next action at the thumb zone
-- Summary and Charts use the same dark navy surfaces, borders and teal/purple/yellow accents
-- Chart remains an independent page with 7d / 30d / 3m / all ranges
+- `Default` profile for Saturday / Sunday / Hong Kong public holidays
+- Three Working Day profiles (defaults: Morning 07:00, Office 09:00, After Work 18:00)
+- Each profile controls Ring, Notification, Media, Alarm and System volume levels
+- Profile times and levels are stored in AndroidX Preferences DataStore
+- Uses `Asia/Hong_Kong` for all schedule / holiday decisions
+- Uses exact alarms; no 24-hour audio foreground service
+- Re-schedules after reboot, app replacement and time changes
+- App resume self-check: if enabled and actual volume differs from the profile that should be active now, it re-applies the target levels
+- Ongoing silent notification shows the current profile and next transition
+- Notification tap opens the Audio Profiles page
+- Test Profile and Apply Now actions
 
-## Behaviour retained
+## Permissions
+When Audio Schedule is enabled, Android may ask for:
+- **Alarms & reminders** — exact profile changes at configured times
+- **Notifications** — ongoing current-profile status notification
 
-- deterministic Smart Next flow
-- second-precision timestamps and durations
-- KMB / government ETA cache + foreground tracking
-- 3 ETA arrivals per route when available
-- backup / restore
-- widget
-- signed Release-only GitHub Actions workflow
+No Do Not Disturb access is requested or used.
 
-## Build
+## Holiday source
+Official 1823 Traditional Chinese iCal:
+`https://www.1823.gov.hk/common/ical/tc.ics`
 
-The GitHub workflow is included at `.github/workflows/android-build.yml`.
-It builds the Release APK only and uses repository signing secrets when present.
+Cached holiday data is reused by both Calendar and Audio Profiles. If the cache is older than 7 days, the app refreshes it in the background when opened.
 
-## v2.8 custom vehicle
+## Release build
+GitHub Actions workflow: `.github/workflows/android-build.yml`
 
-- Added **其他巴士 / 車** as a real transport event, separate from **其他事**.
-- It uses the same commute flow as 38 / 42C: 到巴士站 → 上車 → 落車.
-- Waiting time and journey duration are calculated normally.
-- Tap records immediately as `上 其他車`; long-press the timeline entry can change only the route/vehicle name (for example 72, 290A, 的士) without changing the timestamp.
-- No note field is added.
-- Fixed 38 / 42C charts stay clean; custom vehicles do not get mixed into those route-specific charts.
-- Daily commute summary includes custom-vehicle journey time under **車程**.
-
-## v2.10 Holiday Calendar
-
-- Settings/Menu adds **Calendar · 香港公眾假期**.
-- Calendar uses only the official 1823 Traditional Chinese public-holiday iCal feed:
-  `https://www.1823.gov.hk/common/ical/tc.ics`
-- Opening Calendar auto-checks when the previous check is older than 7 days.
-- Cached holidays stay visible while refreshing or when the network fails.
-- Calendar shows both the source/data update date (when available from iCal/HTTP metadata) and the last check time.
-- Manual **立即更新** is available on the Calendar page.
+Release signing uses repository secrets already supported by this project.
