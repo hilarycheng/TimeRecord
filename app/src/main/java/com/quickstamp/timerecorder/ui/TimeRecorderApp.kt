@@ -111,7 +111,7 @@ private data class TapFeedback(val key: String, val text: String, val timestamp:
 private enum class HistoryRange(val days: Long?) { DAYS_7(7), DAYS_30(30), DAYS_90(90), ALL(null) }
 
 @Composable
-fun TimeRecorderApp(audioProfileRequestSignal: Int = 0) {
+fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int = 0) {
     val context = LocalContext.current
     var state by remember { mutableStateOf(AppStore.load(context)) }
     var now by remember { mutableLongStateOf(HkTime.now()) }
@@ -123,6 +123,7 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0) {
     var historyOpen by remember { mutableStateOf(false) }
     var calendarOpen by remember { mutableStateOf(false) }
     var audioProfileOpen by remember { mutableStateOf(false) }
+    var alarmOpen by remember { mutableStateOf(false) }
     var backfillOpen by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<TapFeedback?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -133,6 +134,18 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0) {
     LaunchedEffect(audioProfileRequestSignal) {
         if (audioProfileRequestSignal > 0) {
             audioProfileOpen = true
+            alarmOpen = false
+            calendarOpen = false
+            historyOpen = false
+            if (drawerState.isOpen) drawerState.close()
+        }
+    }
+
+
+    LaunchedEffect(alarmRequestSignal) {
+        if (alarmRequestSignal > 0) {
+            alarmOpen = true
+            audioProfileOpen = false
             calendarOpen = false
             historyOpen = false
             if (drawerState.isOpen) drawerState.close()
@@ -252,15 +265,19 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0) {
         scope.launch { drawerState.close() }
     }
 
-    BackHandler(enabled = audioProfileOpen && drawerState.isClosed) {
+    BackHandler(enabled = alarmOpen && drawerState.isClosed) {
+        alarmOpen = false
+    }
+
+    BackHandler(enabled = audioProfileOpen && !alarmOpen && drawerState.isClosed) {
         audioProfileOpen = false
     }
 
-    BackHandler(enabled = calendarOpen && !audioProfileOpen && drawerState.isClosed) {
+    BackHandler(enabled = calendarOpen && !audioProfileOpen && !alarmOpen && drawerState.isClosed) {
         calendarOpen = false
     }
 
-    BackHandler(enabled = historyOpen && !calendarOpen && !audioProfileOpen && drawerState.isClosed) {
+    BackHandler(enabled = historyOpen && !calendarOpen && !audioProfileOpen && !alarmOpen && drawerState.isClosed) {
         historyOpen = false
     }
 
@@ -277,9 +294,10 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0) {
                     refreshEta(mode)
                     scope.launch { drawerState.close() }
                 },
-                onAudioProfiles = { audioProfileOpen = true; calendarOpen = false; historyOpen = false; scope.launch { drawerState.close() } },
-                onCalendar = { calendarOpen = true; audioProfileOpen = false; historyOpen = false; scope.launch { drawerState.close() } },
-                onHistory = { historyOpen = true; calendarOpen = false; audioProfileOpen = false; scope.launch { drawerState.close() } },
+                onAudioProfiles = { audioProfileOpen = true; alarmOpen = false; calendarOpen = false; historyOpen = false; scope.launch { drawerState.close() } },
+                onAlarms = { alarmOpen = true; audioProfileOpen = false; calendarOpen = false; historyOpen = false; scope.launch { drawerState.close() } },
+                onCalendar = { calendarOpen = true; audioProfileOpen = false; alarmOpen = false; historyOpen = false; scope.launch { drawerState.close() } },
+                onHistory = { historyOpen = true; calendarOpen = false; audioProfileOpen = false; alarmOpen = false; scope.launch { drawerState.close() } },
                 onBackup = {
                     backupLauncher.launch("time-recorder-backup-${HkTime.today()}.json")
                     scope.launch { drawerState.close() }
@@ -295,7 +313,9 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0) {
             )
         }
     ) {
-        if (audioProfileOpen) {
+        if (alarmOpen) {
+            AlarmClockPage(onBack = { alarmOpen = false })
+        } else if (audioProfileOpen) {
             AudioProfilePage(now = now, onBack = { audioProfileOpen = false })
         } else if (calendarOpen) {
             HolidayCalendarPage(context = context, onBack = { calendarOpen = false })
@@ -1243,6 +1263,7 @@ private fun SettingsDrawer(
     onSeconds: (Boolean) -> Unit,
     onRefresh: () -> Unit,
     onAudioProfiles: () -> Unit,
+    onAlarms: () -> Unit,
     onCalendar: () -> Unit,
     onHistory: () -> Unit,
     onBackup: () -> Unit,
@@ -1274,6 +1295,9 @@ private fun SettingsDrawer(
             }
             OutlinedButton(onClick = onAudioProfiles, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebBus)) {
                 Text("Audio Profiles", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(onClick = onAlarms, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebWarm)) {
+                Text("Alarms", fontWeight = FontWeight.Bold)
             }
             OutlinedButton(onClick = onCalendar, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF9EC6))) {
                 Text("Calendar · 香港公眾假期", fontWeight = FontWeight.Bold)

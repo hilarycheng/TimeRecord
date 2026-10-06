@@ -41,3 +41,16 @@ Cached holiday data is reused by both Calendar and Audio Profiles. If the cache 
 GitHub Actions workflow: `.github/workflows/android-build.yml`
 
 Release signing uses repository secrets already supported by this project.
+
+## v2.13 Explicit Alarms
+
+- Alarms are never created automatically. They only exist after the user taps **Alarms → + Add** and enables them.
+- Multiple alarms are supported.
+- Each alarm can be **Working Day Only** (Mon–Fri, excluding cached Hong Kong public holidays) or **Every Day**.
+- Workday alarms fail safe: if a future holiday is not present in the cached official calendar, a weekday alarm rings rather than silently skipping.
+- Uses Android `AlarmManager.setAlarmClock()` and the existing **Alarms & reminders** special access.
+- Ringing uses a short-lived `mediaPlayback` foreground service with the system alarm sound.
+- Before ringing, the app persists the current alarm-stream volume and temporarily boosts it to the alarm's configured ring volume.
+- Dismiss, Snooze (10 minutes), 30-minute timeout, app recovery, or reboot restores the alarm stream.
+- If an Audio Profile changes while an alarm is ringing, the profile's requested Alarm level is deferred and becomes the restore target after the alarm stops.
+- Existing Android Clock / third-party alarms are not read, edited, enabled, disabled, or cancelled by Time Recorder.

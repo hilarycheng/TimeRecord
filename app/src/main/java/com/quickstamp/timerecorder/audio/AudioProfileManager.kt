@@ -13,6 +13,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.quickstamp.timerecorder.MainActivity
+import com.quickstamp.timerecorder.alarm.AlarmVolumeGuard
 import com.quickstamp.timerecorder.data.AudioProfileStore
 import com.quickstamp.timerecorder.data.HolidayCalendarStore
 import com.quickstamp.timerecorder.model.HkTime
@@ -84,7 +85,9 @@ object AudioProfileManager {
         set(AudioManager.STREAM_RING, levels.ring, "Ring")
         set(AudioManager.STREAM_NOTIFICATION, levels.notification, "Notification")
         set(AudioManager.STREAM_MUSIC, levels.media, "Media")
-        set(AudioManager.STREAM_ALARM, levels.alarm, "Alarm")
+        if (!AlarmVolumeGuard.deferProfileAlarmLevel(context, levels.alarm)) {
+            set(AudioManager.STREAM_ALARM, levels.alarm, "Alarm")
+        }
         set(AudioManager.STREAM_SYSTEM, levels.system, "System")
         return failed
     }
@@ -100,7 +103,7 @@ object AudioProfileManager {
         return matchesStream(AudioManager.STREAM_RING, levels.ring) &&
             matchesStream(AudioManager.STREAM_NOTIFICATION, levels.notification) &&
             matchesStream(AudioManager.STREAM_MUSIC, levels.media) &&
-            matchesStream(AudioManager.STREAM_ALARM, levels.alarm) &&
+            (AlarmVolumeGuard.isActive(context) || matchesStream(AudioManager.STREAM_ALARM, levels.alarm)) &&
             matchesStream(AudioManager.STREAM_SYSTEM, levels.system)
     }
 

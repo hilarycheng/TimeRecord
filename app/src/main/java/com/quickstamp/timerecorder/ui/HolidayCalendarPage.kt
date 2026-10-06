@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.quickstamp.timerecorder.alarm.AlarmClockScheduler
 import com.quickstamp.timerecorder.data.HolidayCalendarCache
 import com.quickstamp.timerecorder.data.HolidayCalendarStore
 import com.quickstamp.timerecorder.data.PublicHoliday
@@ -66,6 +67,7 @@ internal fun HolidayCalendarPage(
         if (refreshing) return
         refreshing = true
         cache = withContext(Dispatchers.IO) { HolidayCalendarStore.refresh(context.applicationContext) }
+        runCatching { AlarmClockScheduler.scheduleAll(context.applicationContext) }
         refreshing = false
     }
 

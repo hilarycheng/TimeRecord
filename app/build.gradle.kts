@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 19
-        versionName = "2.12-audio-profiles"
+        versionCode = 20
+        versionName = "2.13-explicit-alarms"
     }
 
     buildFeatures {

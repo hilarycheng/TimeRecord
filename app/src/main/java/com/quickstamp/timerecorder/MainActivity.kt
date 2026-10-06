@@ -7,6 +7,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.lifecycle.lifecycleScope
 import com.quickstamp.timerecorder.audio.AudioProfileManager
+import com.quickstamp.timerecorder.alarm.AlarmClockScheduler
+import com.quickstamp.timerecorder.alarm.AlarmVolumeGuard
 import com.quickstamp.timerecorder.data.AppStore
 import com.quickstamp.timerecorder.data.HolidayCalendarStore
 import com.quickstamp.timerecorder.model.HkTime
@@ -22,7 +24,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    companion object { const val EXTRA_OPEN_ALARMS = "open_explicit_alarms" }
+
     private val audioProfileRequestSignal = mutableIntStateOf(0)
+    private val alarmRequestSignal = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,7 +35,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             TimeRecorderTheme {
-                TimeRecorderApp(audioProfileRequestSignal = audioProfileRequestSignal.intValue)
+                TimeRecorderApp(
+                    audioProfileRequestSignal = audioProfileRequestSignal.intValue,
+                    alarmRequestSignal = alarmRequestSignal.intValue,
+                )
             }
         }
 
@@ -52,6 +60,10 @@ class MainActivity : ComponentActivity() {
             audioProfileRequestSignal.intValue += 1
             intent.removeExtra(AudioProfileManager.EXTRA_OPEN_AUDIO_PROFILE)
         }
+        if (intent?.getBooleanExtra(EXTRA_OPEN_ALARMS, false) == true) {
+            alarmRequestSignal.intValue += 1
+            intent.removeExtra(EXTRA_OPEN_ALARMS)
+        }
     }
 
     private fun isRidingToday(events: List<com.quickstamp.timerecorder.model.RecorderEvent>): Boolean {
@@ -65,6 +77,9 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
 
+        runCatching { AlarmVolumeGuard.recoverIfNeeded(applicationContext) }
+        runCatching { AlarmClockScheduler.scheduleAll(applicationContext) }
+
         lifecycleScope.launch {
             runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
             val holidayCache = HolidayCalendarStore.load(applicationContext)
@@ -73,6 +88,7 @@ class MainActivity : ComponentActivity() {
                     runCatching { HolidayCalendarStore.refresh(applicationContext) }
                 }
                 runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
+                runCatching { AlarmClockScheduler.scheduleAll(applicationContext) }
             }
         }
 
