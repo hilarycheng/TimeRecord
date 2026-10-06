@@ -40,3 +40,13 @@ It builds the Release APK only and uses repository signing secrets when present.
 - No note field is added.
 - Fixed 38 / 42C charts stay clean; custom vehicles do not get mixed into those route-specific charts.
 - Daily commute summary includes custom-vehicle journey time under **車程**.
+
+## v2.10 Holiday Calendar
+
+- Settings/Menu adds **Calendar · 香港公眾假期**.
+- Calendar uses only the official 1823 Traditional Chinese public-holiday iCal feed:
+  `https://www.1823.gov.hk/common/ical/tc.ics`
+- Opening Calendar auto-checks when the previous check is older than 7 days.
+- Cached holidays stay visible while refreshing or when the network fails.
+- Calendar shows both the source/data update date (when available from iCal/HTTP metadata) and the last check time.
+- Manual **立即更新** is available on the Calendar page.

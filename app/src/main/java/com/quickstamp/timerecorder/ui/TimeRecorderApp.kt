@@ -121,6 +121,7 @@ fun TimeRecorderApp() {
     var renameTarget by remember { mutableStateOf<RecorderEvent?>(null) }
     var routeEditTarget by remember { mutableStateOf<RecorderEvent?>(null) }
     var historyOpen by remember { mutableStateOf(false) }
+    var calendarOpen by remember { mutableStateOf(false) }
     var backfillOpen by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<TapFeedback?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -241,7 +242,11 @@ fun TimeRecorderApp() {
         scope.launch { drawerState.close() }
     }
 
-    BackHandler(enabled = historyOpen && drawerState.isClosed) {
+    BackHandler(enabled = calendarOpen && drawerState.isClosed) {
+        calendarOpen = false
+    }
+
+    BackHandler(enabled = historyOpen && !calendarOpen && drawerState.isClosed) {
         historyOpen = false
     }
 
@@ -258,7 +263,8 @@ fun TimeRecorderApp() {
                     refreshEta(mode)
                     scope.launch { drawerState.close() }
                 },
-                onHistory = { historyOpen = true; scope.launch { drawerState.close() } },
+                onCalendar = { calendarOpen = true; historyOpen = false; scope.launch { drawerState.close() } },
+                onHistory = { historyOpen = true; calendarOpen = false; scope.launch { drawerState.close() } },
                 onBackup = {
                     backupLauncher.launch("time-recorder-backup-${HkTime.today()}.json")
                     scope.launch { drawerState.close() }
@@ -274,7 +280,9 @@ fun TimeRecorderApp() {
             )
         }
     ) {
-        if (historyOpen) {
+        if (calendarOpen) {
+            HolidayCalendarPage(context = context, onBack = { calendarOpen = false })
+        } else if (historyOpen) {
             HistoryPage(state = state, onBack = { historyOpen = false })
         } else {
         val today = HkTime.today(now)
@@ -1217,6 +1225,7 @@ private fun SettingsDrawer(
     state: RecorderState,
     onSeconds: (Boolean) -> Unit,
     onRefresh: () -> Unit,
+    onCalendar: () -> Unit,
     onHistory: () -> Unit,
     onBackup: () -> Unit,
     onRestore: () -> Unit,
@@ -1244,6 +1253,9 @@ private fun SettingsDrawer(
             Text("返工：德福花園\n放工：屏麗徑南行\n38 / 42C · 政府 / KMB raw ETA · 60 秒 tracking", fontSize = 12.sp, lineHeight = 19.sp, color = WebInk)
             Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = WebBusSoft, contentColor = Color(0xFFA5F5E9))) {
                 Text("立即更新 ETA", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(onClick = onCalendar, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF9EC6))) {
+                Text("Calendar · 香港公眾假期", fontWeight = FontWeight.Bold)
             }
             OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = WebAccent2)) {
                 Text("圖表 / 歷史", fontWeight = FontWeight.Bold)

@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 16
-        versionName = "2.9-ui-flow-fix"
+        versionCode = 17
+        versionName = "2.10-holiday-calendar"
     }
 
     buildFeatures {
