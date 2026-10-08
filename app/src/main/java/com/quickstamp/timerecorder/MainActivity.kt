@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.lifecycle.lifecycleScope
 import com.quickstamp.timerecorder.audio.AudioProfileManager
 import com.quickstamp.timerecorder.alarm.AlarmClockScheduler
+import com.quickstamp.timerecorder.alarm.AlarmPlaybackService
 import com.quickstamp.timerecorder.alarm.AlarmVolumeGuard
 import com.quickstamp.timerecorder.data.AppStore
 import com.quickstamp.timerecorder.data.HolidayCalendarStore
@@ -76,6 +77,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+
+        if (AlarmPlaybackService.isRunning) {
+            alarmRequestSignal.intValue += 1
+        }
 
         runCatching { AlarmVolumeGuard.recoverIfNeeded(applicationContext) }
         runCatching { AlarmClockScheduler.scheduleAll(applicationContext) }

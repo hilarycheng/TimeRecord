@@ -66,3 +66,13 @@ Release signing uses repository secrets already supported by this project.
 
 - Removed invalid alarm-theme `windowShowWhenLocked` / `windowTurnScreenOn` XML attributes; the ringing Activity continues to use `setShowWhenLocked(true)` and `setTurnScreenOn(true)` at runtime.
 - Removed Compose `Modifier.weight()` usage from the ringing screen and uses explicit equal button widths instead.
+
+## v2.15 alarm reliability + personal leave
+
+- New/enabled alarms now require a complete core preflight: Exact alarm, Notifications and Full-screen alarm access.
+- Alarms page shows an explicit protection status card for those permissions.
+- Added **1 分鐘後測試鬧鐘** so the full lock-screen path can be verified on the real device before relying on it.
+- If a ringing alarm cannot surface full-screen, opening Time Recorder automatically lands on the Alarms page with Snooze / Dismiss controls.
+- Optional `READ_CALENDAR` access: a Working Day alarm skips an all-day system-calendar event whose title is exactly `放假`.
+- Calendar permission denied / query failure is fail-safe: the alarm rings rather than silently skipping.
+- Personal `放假` days are considered both when computing the next trigger and again at the actual trigger time.

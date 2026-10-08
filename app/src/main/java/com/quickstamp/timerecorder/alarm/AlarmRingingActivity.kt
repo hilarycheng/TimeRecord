@@ -71,7 +71,7 @@ class AlarmRingingActivity : ComponentActivity() {
         // Back must never silently dismiss a ringing alarm.
         onBackPressedDispatcher.addCallback(this) { }
 
-        val alarm = AlarmClockStore.find(this, alarmId)
+        val alarm = AlarmClockStore.find(this, alarmId) ?: AlarmTestStore.find(this, alarmId)
         if (alarm == null) {
             finish()
             return

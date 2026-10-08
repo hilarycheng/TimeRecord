@@ -69,30 +69,82 @@ fun AlarmClockPage(onBack: () -> Unit) {
     var notificationGranted by remember {
         mutableStateOf(Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
     }
-    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        notificationGranted = granted
+    var calendarGranted by remember {
+        mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED)
     }
+    var exactGranted by remember { mutableStateOf(AlarmClockScheduler.canScheduleExact(context)) }
     var fullScreenGranted by remember {
         mutableStateOf(
             Build.VERSION.SDK_INT < 34 ||
                 context.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
         )
     }
+    var testScheduledAt by remember { mutableStateOf<Long?>(null) }
+
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notificationGranted = granted
+    }
+    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        calendarGranted = granted
+        if (granted) runCatching { AlarmClockScheduler.scheduleAll(context) }
+    }
+
     DisposableEffect(context) {
         val owner = context as? LifecycleOwner
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && Build.VERSION.SDK_INT >= 34) {
-                fullScreenGranted = context.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                exactGranted = AlarmClockScheduler.canScheduleExact(context)
+                notificationGranted = Build.VERSION.SDK_INT < 33 ||
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+                calendarGranted = context.checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
+                if (Build.VERSION.SDK_INT >= 34) {
+                    fullScreenGranted = context.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+                }
             }
         }
         owner?.lifecycle?.addObserver(observer)
         onDispose { owner?.lifecycle?.removeObserver(observer) }
     }
 
+    fun openFullScreenSettings() {
+        if (Build.VERSION.SDK_INT < 34) return
+        runCatching {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                    Uri.parse("package:${context.packageName}"),
+                )
+            )
+        }
+    }
+
+    fun coreAlarmAccessReady(): Boolean = exactGranted && notificationGranted && fullScreenGranted
+
+    /** Returns true only when a newly-created/enabled alarm can be treated as fully protected. */
+    fun requestMissingCoreAccess(): Boolean {
+        if (!exactGranted) {
+            context.startActivity(AudioProfileScheduler.exactAlarmSettingsIntent(context))
+            return false
+        }
+        if (!notificationGranted && Build.VERSION.SDK_INT >= 33) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return false
+        }
+        if (!fullScreenGranted && Build.VERSION.SDK_INT >= 34) {
+            openFullScreenSettings()
+            return false
+        }
+        return true
+    }
+
     fun refresh() { alarms = AlarmClockStore.load(context) }
     fun save(alarm: UserAlarm) {
         AlarmClockStore.upsert(context, alarm)
-        if (alarm.enabled) AlarmClockScheduler.schedule(context, alarm) else AlarmClockScheduler.cancel(context, alarm.id)
+        if (alarm.enabled && coreAlarmAccessReady()) {
+            AlarmClockScheduler.schedule(context, alarm)
+        } else if (!alarm.enabled) {
+            AlarmClockScheduler.cancel(context, alarm.id)
+        }
         refresh()
     }
 
@@ -112,6 +164,7 @@ fun AlarmClockPage(onBack: () -> Unit) {
                 Text("Alarms", color = WebInk, fontSize = 19.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
                 Button(
                     onClick = {
+                        if (!requestMissingCoreAccess()) return@Button
                         val now = LocalTime.now(HkTime.zone)
                         TimePickerDialog(context, { _, h, m ->
                             val alarm = UserAlarm(time = LocalTime.of(h, m), enabled = true, workingDayOnly = true, ringVolume = 100)
@@ -154,7 +207,14 @@ fun AlarmClockPage(onBack: () -> Unit) {
                 }
             }
 
-            if (!AlarmClockScheduler.canScheduleExact(context)) {
+            AlarmAccessStatusCard(
+                exactGranted = exactGranted,
+                fullScreenGranted = fullScreenGranted,
+                notificationGranted = notificationGranted,
+                calendarGranted = calendarGranted,
+            )
+
+            if (!exactGranted) {
                 AlarmPermissionCard(
                     title = "需要 Alarms & reminders 權限",
                     text = "用真正 Alarm Clock 排程，確保指定時間觸發。",
@@ -175,16 +235,35 @@ fun AlarmClockPage(onBack: () -> Unit) {
                     title = "需要 Full-screen alarm 權限",
                     text = "鎖屏／熄屏時用 Clock-style 全屏 Alarm 顯示 Snooze / Stop。",
                     button = "Grant",
-                    onClick = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
-                                    Uri.parse("package:${context.packageName}"),
-                                )
-                            )
-                        }
-                    },
+                    onClick = { openFullScreenSettings() },
+                )
+            }
+
+            if (!calendarGranted) {
+                AlarmPermissionCard(
+                    title = "可選：讀取 Calendar『放假』",
+                    text = "Working Day Alarm 遇到全日、標題完全等於『放假』嘅事件會 Skip；唔授權或讀取失敗就照響。",
+                    button = "Grant",
+                    onClick = { calendarPermission.launch(Manifest.permission.READ_CALENDAR) },
+                )
+            }
+
+            OutlinedButton(
+                onClick = {
+                    if (!requestMissingCoreAccess()) return@OutlinedButton
+                    testScheduledAt = AlarmClockScheduler.scheduleTest(context, 100)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, WebBus.copy(alpha = .65f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = WebBus),
+            ) {
+                Text("1 分鐘後測試鬧鐘", fontWeight = FontWeight.Black)
+            }
+            testScheduledAt?.let { at ->
+                Text(
+                    "測試已排程：${Instant.ofEpochMilli(at).atZone(HkTime.zone).format(DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ENGLISH))} · 建議鎖屏驗證 Full Screen",
+                    color = WebMuted,
+                    fontSize = 9.sp,
                 )
             }
 
@@ -203,7 +282,9 @@ fun AlarmClockPage(onBack: () -> Unit) {
                         onTime = {
                             TimePickerDialog(context, { _, h, m -> save(alarm.copy(time = LocalTime.of(h, m))) }, alarm.time.hour, alarm.time.minute, true).show()
                         },
-                        onEnabled = { save(alarm.copy(enabled = it)) },
+                        onEnabled = { enabled ->
+                            if (!enabled || requestMissingCoreAccess()) save(alarm.copy(enabled = enabled))
+                        },
                         onWorkingDay = { save(alarm.copy(workingDayOnly = it)) },
                         onVolume = { value -> alarms = alarms.map { if (it.id == alarm.id) alarm.copy(ringVolume = value) else it } },
                         onVolumeFinished = {
@@ -250,7 +331,7 @@ private fun AlarmCard(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("香港工作日", color = WebInk, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text("Mon–Fri；Sat / Sun / 香港公眾假期會 Skip。", color = WebMuted, fontSize = 9.sp)
+                    Text("Mon–Fri；Sat / Sun / 香港公眾假期 / Calendar 全日『放假』會 Skip。", color = WebMuted, fontSize = 9.sp)
                 }
                 Switch(checked = alarm.workingDayOnly, onCheckedChange = onWorkingDay)
             }
@@ -269,6 +350,39 @@ private fun AlarmCard(
             TextButton(onClick = onDelete, modifier = Modifier.align(Alignment.End)) { Text("Delete", color = WebDanger, fontWeight = FontWeight.Bold) }
         }
     }
+}
+
+@Composable
+private fun AlarmAccessStatusCard(
+    exactGranted: Boolean,
+    fullScreenGranted: Boolean,
+    notificationGranted: Boolean,
+    calendarGranted: Boolean,
+) {
+    Surface(shape = RoundedCornerShape(16.dp), color = WebCard, border = BorderStroke(1.dp, WebLine)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Alarm protection", color = WebInk, fontWeight = FontWeight.Black, fontSize = 12.sp)
+            AlarmAccessLine("Exact alarm", exactGranted)
+            AlarmAccessLine("Full screen", fullScreenGranted)
+            AlarmAccessLine("Notification", notificationGranted)
+            AlarmAccessLine("Calendar『放假』（optional）", calendarGranted, optional = true)
+        }
+    }
+}
+
+@Composable
+private fun AlarmAccessLine(label: String, granted: Boolean, optional: Boolean = false) {
+    val suffix = when {
+        granted -> "✓"
+        optional -> "Not granted"
+        else -> "Required"
+    }
+    Text(
+        "$label  ·  $suffix",
+        color = if (granted) WebBus else if (optional) WebMuted else WebDanger,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Bold,
+    )
 }
 
 @Composable

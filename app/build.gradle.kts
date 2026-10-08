@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 22
-        versionName = "2.14.1-clock-ringing-fix"
+        versionCode = 23
+        versionName = "2.15-alarm-preflight-calendar-leave"
     }
 
     buildFeatures {

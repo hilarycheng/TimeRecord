@@ -10,15 +10,23 @@ import com.quickstamp.timerecorder.model.HkTime
 
 object AlarmClockScheduler {
     private const val SNOOZE_MINUTES = 10L
+    private const val TEST_DELAY_MS = 60_000L
 
     fun scheduleAll(context: Context) {
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        AlarmClockStore.load(context).forEach { alarm -> schedule(context, alarm, holidays) }
+        val from = HkTime.today()
+        val personalLeave = PersonalDayOffCalendar.leaveDates(context, from, from.plusDays(371))
+        AlarmClockStore.load(context).forEach { alarm -> schedule(context, alarm, holidays, personalLeave) }
     }
 
-    fun schedule(context: Context, alarm: UserAlarm, holidays: Set<java.time.LocalDate> = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()) {
+    fun schedule(
+        context: Context,
+        alarm: UserAlarm,
+        holidays: Set<java.time.LocalDate> = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet(),
+        personalLeaveDates: Set<java.time.LocalDate> = PersonalDayOffCalendar.leaveDates(context, HkTime.today(), HkTime.today().plusDays(371)),
+    ) {
         cancelRegular(context, alarm.id)
-        val at = AlarmClockEngine.nextTrigger(alarm, HkTime.now(), holidays) ?: return
+        val at = AlarmClockEngine.nextTrigger(alarm, HkTime.now(), holidays, personalLeaveDates) ?: return
         val manager = context.getSystemService(AlarmManager::class.java)
         if (!canScheduleExact(context)) return
         val operation = PendingIntent.getBroadcast(
@@ -71,7 +79,35 @@ object AlarmClockScheduler {
     fun nextTrigger(context: Context, alarm: UserAlarm): Long? {
         if (!canScheduleExact(context)) return null
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        return AlarmClockEngine.nextTrigger(alarm, HkTime.now(), holidays)
+        val from = HkTime.today()
+        val personalLeave = PersonalDayOffCalendar.leaveDates(context, from, from.plusDays(371))
+        return AlarmClockEngine.nextTrigger(alarm, HkTime.now(), holidays, personalLeave)
+    }
+
+    /** Schedule a one-off hidden alarm exactly one minute from now for full-screen verification. */
+    fun scheduleTest(context: Context, ringVolume: Int = 100): Long? {
+        if (!canScheduleExact(context)) return null
+        val manager = context.getSystemService(AlarmManager::class.java)
+        val at = HkTime.now() + TEST_DELAY_MS
+        val alarm = AlarmTestStore.prepare(context, at, ringVolume)
+        val operation = PendingIntent.getBroadcast(
+            context,
+            requestCode(alarm.id, 2),
+            Intent(context, AlarmClockReceiver::class.java)
+                .setAction(AlarmClockReceiver.ACTION_TEST_RING)
+                .putExtra(AlarmClockReceiver.EXTRA_ALARM_ID, alarm.id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val show = PendingIntent.getActivity(
+            context,
+            requestCode(alarm.id, 9),
+            Intent(context, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_OPEN_ALARMS, true)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        manager.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), operation)
+        return at
     }
 
     fun canScheduleExact(context: Context): Boolean {

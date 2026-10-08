@@ -48,7 +48,7 @@ class AlarmPlaybackService : Service() {
     }
 
     private fun startAlarm(alarmId: String) {
-        val alarm = AlarmClockStore.find(this, alarmId) ?: run { stopSelf(); return }
+        val alarm = AlarmClockStore.find(this, alarmId) ?: AlarmTestStore.find(this, alarmId) ?: run { stopSelf(); return }
         if (isRunning) stopAlarm(stopSelfAfter = false)
         activeAlarmId = alarmId
         isRunning = true
@@ -117,7 +117,6 @@ class AlarmPlaybackService : Service() {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSilent(true)
             .addAction(0, "Snooze 10m", actionPending(AlarmActionReceiver.ACTION_SNOOZE, 11))
             .addAction(0, "Dismiss", actionPending(AlarmActionReceiver.ACTION_DISMISS, 12))
             .build()
