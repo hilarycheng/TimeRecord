@@ -76,3 +76,8 @@ Release signing uses repository secrets already supported by this project.
 - Optional `READ_CALENDAR` access: a Working Day alarm skips an all-day system-calendar event whose title is exactly `放假`.
 - Calendar permission denied / query failure is fail-safe: the alarm rings rather than silently skipping.
 - Personal `放假` days are considered both when computing the next trigger and again at the actual trigger time.
+
+
+## v2.16 Audio Profile leave-day rule
+
+Audio Profile now treats an all-day system Calendar event whose title is exactly `放假` as a non-working day, matching the existing alarm rule. Weekend, official Hong Kong public holidays, and personal `放假` days all use the Default profile. Calendar permission/query failures keep the previous fail-safe Working Day behaviour.

@@ -11,11 +11,22 @@ object AudioProfileEngine {
     fun isWorkingDay(date: LocalDate, holidays: Set<LocalDate>): Boolean =
         date.dayOfWeek !in setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY) && date !in holidays
 
-    fun resolve(config: AudioScheduleConfig, now: Long, holidays: Set<LocalDate>): AudioProfileResolution {
+    private fun isWorkingDay(
+        date: LocalDate,
+        holidays: Set<LocalDate>,
+        personalLeaveDates: Set<LocalDate>,
+    ): Boolean = isWorkingDay(date, holidays) && date !in personalLeaveDates
+
+    fun resolve(
+        config: AudioScheduleConfig,
+        now: Long,
+        holidays: Set<LocalDate>,
+        personalLeaveDates: Set<LocalDate> = emptySet(),
+    ): AudioProfileResolution {
         val z = Instant.ofEpochMilli(now).atZone(HkTime.zone)
         val date = z.toLocalDate()
         val time = z.toLocalTime()
-        val working = isWorkingDay(date, holidays)
+        val working = isWorkingDay(date, holidays, personalLeaveDates)
 
         val active = if (!working) {
             AudioProfileId.DEFAULT
@@ -23,8 +34,9 @@ object AudioProfileEngine {
             config.scheduled().filter { !it.time.isAfter(time) }.maxByOrNull { it.time }?.id ?: AudioProfileId.DEFAULT
         }
 
-        val next = nextActualTransition(config, now, holidays, active)
+        val next = nextActualTransition(config, now, holidays, personalLeaveDates, active)
         val dayLabel = when {
+            date in personalLeaveDates -> "放假"
             date in holidays -> "公眾假期"
             date.dayOfWeek == DayOfWeek.SATURDAY || date.dayOfWeek == DayOfWeek.SUNDAY -> "Weekend"
             else -> "Working Day"
@@ -43,6 +55,7 @@ object AudioProfileEngine {
         config: AudioScheduleConfig,
         now: Long,
         holidays: Set<LocalDate>,
+        personalLeaveDates: Set<LocalDate>,
         current: AudioProfileId,
     ): Pair<Long, String>? {
         val currentZ = Instant.ofEpochMilli(now).atZone(HkTime.zone)
@@ -55,7 +68,7 @@ object AudioProfileEngine {
             // weekends/public holidays never keep an Office profile overnight.
             val midnight = LocalDateTime.of(date, LocalTime.MIDNIGHT).atZone(HkTime.zone).toInstant().toEpochMilli()
             candidates += midnight to AudioProfileId.DEFAULT
-            if (isWorkingDay(date, holidays)) {
+            if (isWorkingDay(date, holidays, personalLeaveDates)) {
                 config.scheduled().forEach { p ->
                     val at = LocalDateTime.of(date, p.time).atZone(HkTime.zone).toInstant().toEpochMilli()
                     candidates += at to p.id

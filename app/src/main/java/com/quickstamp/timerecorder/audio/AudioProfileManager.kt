@@ -13,11 +13,13 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.quickstamp.timerecorder.MainActivity
+import com.quickstamp.timerecorder.alarm.PersonalDayOffCalendar
 import com.quickstamp.timerecorder.alarm.AlarmVolumeGuard
 import com.quickstamp.timerecorder.data.AudioProfileStore
 import com.quickstamp.timerecorder.data.HolidayCalendarStore
 import com.quickstamp.timerecorder.model.HkTime
 import java.time.Instant
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -27,6 +29,14 @@ object AudioProfileManager {
     private const val CHANNEL_ID = "audio_profile_status"
     private const val NOTIFICATION_ID = 3401
 
+    private fun personalLeaveDates(context: Context, now: Long): Set<LocalDate> {
+        val today = Instant.ofEpochMilli(now).atZone(HkTime.zone).toLocalDate()
+        // AudioProfileEngine looks ahead up to 10 days when it calculates the next
+        // transition, so load the same horizon. Permission/query failures return
+        // an empty set and deliberately fall back to the normal Working Day rules.
+        return PersonalDayOffCalendar.leaveDates(context, today, today.plusDays(11))
+    }
+
     suspend fun reconcileOnAppOpen(context: Context) {
         val config = AudioProfileStore.load(context)
         if (!config.enabled) {
@@ -35,7 +45,9 @@ object AudioProfileManager {
             return
         }
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        val resolution = AudioProfileEngine.resolve(config, HkTime.now(), holidays)
+        val now = HkTime.now()
+        val personalLeave = personalLeaveDates(context, now)
+        val resolution = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
         if (config.enforceOnAppOpen && !matches(context, resolution.levels)) {
             applyLevels(context, resolution.levels)
         }
@@ -51,7 +63,9 @@ object AudioProfileManager {
             return
         }
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        val resolution = AudioProfileEngine.resolve(config, HkTime.now(), holidays)
+        val now = HkTime.now()
+        val personalLeave = personalLeaveDates(context, now)
+        val resolution = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
         applyLevels(context, resolution.levels)
         updateNotification(context, config, resolution)
         AudioProfileScheduler.schedule(context, resolution.nextTransitionAt)
@@ -128,14 +142,18 @@ object AudioProfileManager {
         val config = AudioProfileStore.load(context)
         if (!config.enabled) return cancelNotification(context)
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        updateNotification(context, config, AudioProfileEngine.resolve(config, HkTime.now(), holidays))
+        val now = HkTime.now()
+        val personalLeave = personalLeaveDates(context, now)
+        updateNotification(context, config, AudioProfileEngine.resolve(config, now, holidays, personalLeave))
     }
 
     suspend fun showManualProfile(context: Context, label: String, levels: AudioLevels) {
         val config = AudioProfileStore.load(context)
         if (!config.enabled) return
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        val base = AudioProfileEngine.resolve(config, HkTime.now(), holidays)
+        val now = HkTime.now()
+        val personalLeave = personalLeaveDates(context, now)
+        val base = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
         updateNotification(context, config, base.copy(label = "Manual · $label", levels = levels))
         AudioProfileScheduler.schedule(context, base.nextTransitionAt)
     }

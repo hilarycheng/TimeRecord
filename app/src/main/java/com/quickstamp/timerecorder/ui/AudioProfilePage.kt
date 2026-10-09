@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.quickstamp.timerecorder.audio.*
+import com.quickstamp.timerecorder.alarm.PersonalDayOffCalendar
 import com.quickstamp.timerecorder.data.AudioProfileStore
 import com.quickstamp.timerecorder.data.HolidayCalendarStore
 import com.quickstamp.timerecorder.model.HkTime
@@ -29,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -44,6 +46,7 @@ fun AudioProfilePage(
     var config by remember { mutableStateOf<AudioScheduleConfig?>(null) }
     var selected by remember { mutableStateOf(AudioProfileId.OFFICE) }
     var refreshingHoliday by remember { mutableStateOf(false) }
+    var personalLeaveDates by remember { mutableStateOf<Set<LocalDate>>(emptySet()) }
 
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -53,6 +56,10 @@ fun AudioProfilePage(
 
     LaunchedEffect(Unit) {
         config = AudioProfileStore.load(context)
+        val today = HkTime.today()
+        personalLeaveDates = withContext(Dispatchers.IO) {
+            PersonalDayOffCalendar.leaveDates(context, today, today.plusDays(11))
+        }
         val cache = HolidayCalendarStore.load(context)
         if (HolidayCalendarStore.shouldRefresh(cache)) {
             refreshingHoliday = true
@@ -71,7 +78,7 @@ fun AudioProfilePage(
     }
 
     val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-    val resolution = AudioProfileEngine.resolve(cfg, now, holidays)
+    val resolution = AudioProfileEngine.resolve(cfg, now, holidays, personalLeaveDates)
     val exactAllowed = AudioProfileScheduler.canScheduleExact(context)
     val notificationAllowed = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     val selectedLevels = cfg.levels(selected)
