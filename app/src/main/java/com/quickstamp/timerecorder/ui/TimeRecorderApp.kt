@@ -86,6 +86,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.quickstamp.timerecorder.data.AppStore
 import com.quickstamp.timerecorder.data.RecorderActions
+import com.quickstamp.timerecorder.data.ReminderStore
+import com.quickstamp.timerecorder.data.ReminderTask
 import com.quickstamp.timerecorder.model.CommuteMode
 import com.quickstamp.timerecorder.model.EtaSnapshot
 import com.quickstamp.timerecorder.model.EventKind
@@ -98,9 +100,13 @@ import com.quickstamp.timerecorder.model.WorkflowAction
 import com.quickstamp.timerecorder.model.WorkflowPlanner
 import com.quickstamp.timerecorder.network.KmbEtaClient
 import com.quickstamp.timerecorder.service.EtaForegroundService
+import com.quickstamp.timerecorder.reminder.ReminderEngine
+import com.quickstamp.timerecorder.reminder.ReminderScheduler
 import com.quickstamp.timerecorder.widget.TimeRecorderWidgetProvider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -126,6 +132,8 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
     var alarmOpen by remember { mutableStateOf(false) }
     var backfillOpen by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<TapFeedback?>(null) }
+    var reminderVersion by remember { mutableStateOf(ReminderStore.version(context)) }
+    var todayReminderTasks by remember { mutableStateOf<List<ReminderTask>>(emptyList()) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val io = remember { Executors.newSingleThreadExecutor() }
@@ -191,6 +199,11 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
         runCatching { TimeRecorderWidgetProvider.updateAll(context) }
     }
 
+    suspend fun reloadReminders() {
+        todayReminderTasks = withContext(Dispatchers.IO) { ReminderEngine.tasksForDate(context.applicationContext, HkTime.today()) }
+        reminderVersion = ReminderStore.version(context)
+    }
+
     fun refreshEta(mode: CommuteMode) {
         val todayEvents = state.events.filter { HkTime.date(it.timestamp) == HkTime.today() }.sortedBy { it.timestamp }
         if (activeRideEvent(todayEvents) != null) return
@@ -234,6 +247,8 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
         }
     }
 
+    LaunchedEffect(Unit) { reloadReminders() }
+
     LaunchedEffect(feedback?.timestamp) {
         if (feedback != null) {
             delay(1_600L)
@@ -243,6 +258,7 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
 
     LaunchedEffect(Unit) {
         var lastDay = HkTime.today()
+        var lastReminderMinute = -1L
         while (true) {
             delay(1_000L)
             now = HkTime.now()
@@ -251,12 +267,19 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
                 AppStore.autoClosePastDays(context, now)
                 viewedDate = day
                 reload()
+                reloadReminders()
                 lastDay = day
             }
             val version = AppStore.version(context)
             if (version != lastVersion) {
                 state = AppStore.load(context)
                 lastVersion = version
+            }
+            val rv = ReminderStore.version(context)
+            val minute = now / 60_000L
+            if (rv != reminderVersion || minute != lastReminderMinute) {
+                reloadReminders()
+                lastReminderMinute = minute
             }
         }
     }
@@ -361,6 +384,19 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
                         onHistory = { historyOpen = true },
                         onSettings = { scope.launch { drawerState.open() } },
                     )
+                }
+
+                if (isToday && todayReminderTasks.isNotEmpty()) {
+                    item {
+                        TodayMustDoCard(
+                            tasks = todayReminderTasks,
+                            today = today,
+                            onComplete = { task ->
+                                ReminderScheduler.complete(context, task.taskKey)
+                                scope.launch { reloadReminders() }
+                            },
+                        )
+                    }
                 }
 
                 if (summary.complete && events.isNotEmpty()) {
@@ -536,6 +572,55 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
 }
 
 private fun feedbackFor(feedback: TapFeedback?, key: String): String? = if (feedback?.key == key) feedback.text else null
+
+@Composable
+private fun TodayMustDoCard(
+    tasks: List<ReminderTask>,
+    today: LocalDate,
+    onComplete: (ReminderTask) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().shadow(7.dp, RoundedCornerShape(19.dp), clip = false),
+        shape = RoundedCornerShape(19.dp),
+        color = Color(0xFF1B1B22),
+        border = androidx.compose.foundation.BorderStroke(1.dp, WebWarm.copy(alpha = .45f)),
+    ) {
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("!", color = WebWarm, fontSize = 18.sp, fontWeight = FontWeight.Black)
+                Spacer(Modifier.width(8.dp))
+                Text("今日必做", color = WebInk, fontSize = 17.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                Text("${tasks.size} 項", color = WebMuted, fontSize = 10.sp)
+            }
+            tasks.forEach { task ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp),
+                    color = if (task.status == com.quickstamp.timerecorder.data.ReminderTaskStatus.OVERDUE) WebDangerSoft else WebWarmSoft,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, if (task.status == com.quickstamp.timerecorder.data.ReminderTaskStatus.OVERDUE) WebDanger.copy(alpha=.4f) else WebWarm.copy(alpha=.28f)),
+                ) {
+                    Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(task.title, color = WebInk, fontSize = 13.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "${task.ruleName} · ${ReminderEngine.displayStatus(task, today)}",
+                                color = if (task.status == com.quickstamp.timerecorder.data.ReminderTaskStatus.OVERDUE) WebDanger else WebWarm,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(task.sourceLabel, color = WebDim, fontSize = 8.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Button(
+                            onClick = { onComplete(task) },
+                            colors = ButtonDefaults.buttonColors(containerColor = WebGoodSoft, contentColor = WebGood),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp),
+                        ) { Text("完成", fontSize = 10.sp, fontWeight = FontWeight.Black) }
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun DateHeader(

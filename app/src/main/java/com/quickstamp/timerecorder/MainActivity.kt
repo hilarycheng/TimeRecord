@@ -17,6 +17,7 @@ import com.quickstamp.timerecorder.model.EventKind
 import com.quickstamp.timerecorder.network.KmbEtaClient
 import com.quickstamp.timerecorder.service.EtaForegroundService
 import com.quickstamp.timerecorder.service.EtaServiceController
+import com.quickstamp.timerecorder.reminder.ReminderScheduler
 import com.quickstamp.timerecorder.ui.TimeRecorderApp
 import com.quickstamp.timerecorder.ui.TimeRecorderTheme
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
             delay(1_500L)
             runCatching { AppStore.autoClosePastDays(applicationContext) }
             runCatching { EtaServiceController.scheduleBackgroundRefresh(applicationContext) }
+            runCatching { ReminderScheduler.scheduleAll(applicationContext) }
         }
     }
 
@@ -84,6 +86,7 @@ class MainActivity : ComponentActivity() {
 
         runCatching { AlarmVolumeGuard.recoverIfNeeded(applicationContext) }
         runCatching { AlarmClockScheduler.scheduleAll(applicationContext) }
+        runCatching { ReminderScheduler.scheduleAll(applicationContext) }
 
         lifecycleScope.launch {
             runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
@@ -94,6 +97,7 @@ class MainActivity : ComponentActivity() {
                 }
                 runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
                 runCatching { AlarmClockScheduler.scheduleAll(applicationContext) }
+        runCatching { ReminderScheduler.scheduleAll(applicationContext) }
             }
         }
 

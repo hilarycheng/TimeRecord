@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 24
-        versionName = "2.16-audio-calendar-leave-default"
+        versionCode = 25
+        versionName = "2.17-private-reminders"
     }
 
     buildFeatures {
