@@ -13,7 +13,9 @@ import java.util.UUID
 
 // COUNTDOWN / REQUIRED_WINDOW remain readable for existing v2.17 records.
 enum class ReminderRuleKind { COUNTDOWN, REQUIRED_WINDOW, COMBINED }
-enum class NoticeUnit { DAY, HOUR, WINDOW_DAILY }
+// DAY: amount > 0 = before, amount == 0 = on day, amount < 0 = after.
+// DAY_RANGE: signed offsets from anchor date, e.g. -2..+2 inclusive.
+enum class NoticeUnit { DAY, DAY_RANGE, HOUR, WINDOW_DAILY }
 enum class NoticeAnchor { EVENT, TASK, WINDOW_START, WINDOW_END }
 enum class EligibleDays { EVERY_DAY, MON_FRI, MON_SAT_MORNING }
 enum class PrepUnit { DAY, HOUR }
@@ -25,6 +27,8 @@ data class ReminderNotice(
     val hour: Int = 9,
     val minute: Int = 0,
     val anchor: NoticeAnchor = NoticeAnchor.EVENT,
+    val rangeStartOffsetDays: Int = -2,
+    val rangeEndOffsetDays: Int = 2,
 )
 
 data class RelatedTaskTemplate(
@@ -286,8 +290,11 @@ object ReminderStore {
 
     private fun encodeNotices(items: List<ReminderNotice>): String = JSONArray().apply {
         items.forEach { n -> put(JSONObject().apply {
-            put("id", n.id); put("unit", n.unit.name); put("amount", n.amount.coerceAtLeast(0))
+            put("id", n.id); put("unit", n.unit.name)
+            put("amount", if (n.unit == NoticeUnit.DAY) n.amount.coerceIn(-1825, 1825) else n.amount.coerceIn(0, 1825))
             put("hour", n.hour.coerceIn(0, 23)); put("minute", n.minute.coerceIn(0, 59)); put("anchor", n.anchor.name)
+            put("rangeFromDays", n.rangeStartOffsetDays.coerceIn(-1825, 1825))
+            put("rangeToDays", n.rangeEndOffsetDays.coerceIn(-1825, 1825))
         }) }
     }.toString()
 
@@ -299,9 +306,13 @@ object ReminderStore {
                 add(ReminderNotice(
                     id = x.optString("id").ifBlank { UUID.randomUUID().toString() },
                     unit = runCatching { NoticeUnit.valueOf(x.optString("unit")) }.getOrDefault(NoticeUnit.DAY),
-                    amount = x.optInt("amount").coerceAtLeast(0),
+                    amount = x.optInt("amount").coerceIn(-1825, 1825).let { a ->
+                        if (x.optString("unit") == NoticeUnit.DAY.name) a else a.coerceAtLeast(0)
+                    },
                     hour = x.optInt("hour", 9).coerceIn(0, 23), minute = x.optInt("minute").coerceIn(0, 59),
                     anchor = runCatching { NoticeAnchor.valueOf(x.optString("anchor")) }.getOrDefault(NoticeAnchor.EVENT),
+                    rangeStartOffsetDays = x.optInt("rangeFromDays", -2).coerceIn(-1825, 1825),
+                    rangeEndOffsetDays = x.optInt("rangeToDays", 2).coerceIn(-1825, 1825),
                 ))
             }
         }

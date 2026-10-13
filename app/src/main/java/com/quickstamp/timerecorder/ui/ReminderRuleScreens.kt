@@ -59,7 +59,7 @@ import java.util.Locale
 
 // Each editor is a real page, not an AlertDialog. Form states live above the
 // navigation switch so opening a child editor never loses unsaved parent edits.
-private enum class RuleScreen { LIST, RULE, RELATED, PREPARATION, NOTICE }
+private enum class RuleScreen { LIST, RULE, RELATED, PREPARATION, NOTICE, SIMULATION }
 private enum class NoticeOwner { RULE, RELATED, PREPARATION }
 
 private class RuleDraft(initial: ReminderRule?) {
@@ -148,19 +148,56 @@ private class PreparationDraft(initial: PreparationStep?) {
     }
 }
 
+/** Signed day offsets: D-2 = -2; D-Day = 0; D+2 = +2. */
+private enum class DayPosition { BEFORE, ON, AFTER }
+
+private fun dayPosition(offset: Int): DayPosition = when {
+    offset < 0 -> DayPosition.BEFORE
+    offset > 0 -> DayPosition.AFTER
+    else -> DayPosition.ON
+}
+
+private fun dayOffset(position: DayPosition, amount: String): Int = when (position) {
+    DayPosition.BEFORE -> -(amount.toIntOrNull() ?: 0)
+    DayPosition.ON -> 0
+    DayPosition.AFTER -> amount.toIntOrNull() ?: 0
+}
+
+private fun validDayOffset(position: DayPosition, amount: String): Boolean =
+    position == DayPosition.ON || amount.toIntOrNull()?.let { it in 1..1825 } == true
+
 private class NoticeDraft(initial: ReminderNotice?, defaultAnchor: NoticeAnchor) {
     val base = initial ?: ReminderNotice(anchor = defaultAnchor)
     var unit by mutableStateOf(base.unit)
-    var amount by mutableStateOf(base.amount.toString())
+    var amount by mutableStateOf(kotlin.math.abs(base.amount).toString())
+    var position by mutableStateOf(dayPosition(-base.amount))
     var anchor by mutableStateOf(base.anchor)
     var hour by mutableStateOf(base.hour)
     var minute by mutableStateOf(base.minute)
+    var rangeStartPosition by mutableStateOf(dayPosition(base.rangeStartOffsetDays))
+    var rangeStartAmount by mutableStateOf(kotlin.math.abs(base.rangeStartOffsetDays).toString())
+    var rangeEndPosition by mutableStateOf(dayPosition(base.rangeEndOffsetDays))
+    var rangeEndAmount by mutableStateOf(kotlin.math.abs(base.rangeEndOffsetDays).toString())
 
     val valid: Boolean
-        get() = unit == NoticeUnit.WINDOW_DAILY || validBoundedNumber(amount, 1825)
+        get() = when (unit) {
+            NoticeUnit.DAY -> validDayOffset(position, amount)
+            NoticeUnit.HOUR -> validBoundedNumber(amount, 1825)
+            NoticeUnit.DAY_RANGE -> validDayOffset(rangeStartPosition, rangeStartAmount) &&
+                validDayOffset(rangeEndPosition, rangeEndAmount) &&
+                dayOffset(rangeStartPosition, rangeStartAmount) <= dayOffset(rangeEndPosition, rangeEndAmount)
+            NoticeUnit.WINDOW_DAILY -> true
+        }
 
     fun build(): ReminderNotice = base.copy(
-        unit = unit, amount = amount.toIntOrNull() ?: 0,
+        unit = unit,
+        amount = when (unit) {
+            NoticeUnit.DAY -> -dayOffset(position, amount)
+            NoticeUnit.HOUR -> amount.toInt()
+            else -> base.amount
+        },
+        rangeStartOffsetDays = dayOffset(rangeStartPosition, rangeStartAmount),
+        rangeEndOffsetDays = dayOffset(rangeEndPosition, rangeEndAmount),
         hour = hour, minute = minute,
         anchor = if (unit == NoticeUnit.WINDOW_DAILY) NoticeAnchor.TASK else anchor,
     )
@@ -186,6 +223,7 @@ internal fun ReminderRulesPage(context: Context, onBack: () -> Unit, onChanged: 
     var relatedDraft by remember { mutableStateOf<RelatedDraft?>(null) }
     var preparationDraft by remember { mutableStateOf<PreparationDraft?>(null) }
     var noticeDraft by remember { mutableStateOf<NoticeDraft?>(null) }
+    var simulationDraft by remember { mutableStateOf<RuleSimulationDraft?>(null) }
     var noticeOwner by remember { mutableStateOf(NoticeOwner.RULE) }
     var deleteConfirmation by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -196,6 +234,7 @@ internal fun ReminderRulesPage(context: Context, onBack: () -> Unit, onChanged: 
     val relatedScroll = rememberScrollState()
     val preparationScroll = rememberScrollState()
     val noticeScroll = rememberScrollState()
+    val simulationScroll = rememberScrollState()
 
     fun reload() {
         rules = ReminderStore.rules(context)
@@ -207,7 +246,7 @@ internal fun ReminderRulesPage(context: Context, onBack: () -> Unit, onChanged: 
         screen = when (screen) {
             RuleScreen.LIST -> { onBack(); RuleScreen.LIST }
             RuleScreen.RULE -> RuleScreen.LIST
-            RuleScreen.RELATED, RuleScreen.PREPARATION -> RuleScreen.RULE
+            RuleScreen.RELATED, RuleScreen.PREPARATION, RuleScreen.SIMULATION -> RuleScreen.RULE
             RuleScreen.NOTICE -> when (noticeOwner) {
                 NoticeOwner.RULE -> RuleScreen.RULE
                 NoticeOwner.RELATED -> RuleScreen.RELATED
@@ -244,6 +283,13 @@ internal fun ReminderRulesPage(context: Context, onBack: () -> Unit, onChanged: 
                     }
                 },
                 onDelete = if (draft.existing) ({ deleteConfirmation = true }) else null,
+                onSimulate = {
+                    if (draft.valid) {
+                        scope.launch { simulationScroll.scrollTo(0) }
+                        simulationDraft = RuleSimulationDraft(draft.build())
+                        screen = RuleScreen.SIMULATION
+                    }
+                },
                 onAddRelated = { initial ->
                     scope.launch { relatedScroll.scrollTo(0) }
                     relatedDraft = RelatedDraft(initial)
@@ -282,6 +328,9 @@ internal fun ReminderRulesPage(context: Context, onBack: () -> Unit, onChanged: 
                 },
                 onAddNotice = { initial -> editNotice(NoticeOwner.PREPARATION, initial) },
             )
+        }
+        RuleScreen.SIMULATION -> simulationDraft?.let { draft ->
+            RuleSimulationScreen(context, draft, simulationScroll, onBack = { back() })
         }
         RuleScreen.NOTICE -> noticeDraft?.let { draft ->
             val allowWindow = when (noticeOwner) {
@@ -445,10 +494,30 @@ private fun NotificationsList(
         }
         HorizontalDivider(color = WebLine.copy(alpha = .5f))
     }
-    val duplicateCount = notices.groupingBy { listOf(it.unit, it.amount, it.anchor, it.hour, it.minute) }
+    val duplicateCount = notices.groupingBy {
+        listOf(it.unit, it.amount, it.anchor, it.hour, it.minute, it.rangeStartOffsetDays, it.rangeEndOffsetDays)
+    }
         .eachCount().values.count { it > 1 }
     if (duplicateCount > 0) {
         Text("注意：有相同時間及條件嘅重複 Notification。", color = WebWarm, fontSize = 11.sp)
+    }
+    val overlapping = notices.withIndex().any { (index, first) ->
+        notices.drop(index + 1).any { second ->
+            if (first.anchor != second.anchor || first.hour != second.hour || first.minute != second.minute) false
+            else {
+                fun bounds(n: ReminderNotice): IntRange? = when (n.unit) {
+                    NoticeUnit.DAY -> (-n.amount)..(-n.amount)
+                    NoticeUnit.DAY_RANGE -> n.rangeStartOffsetDays..n.rangeEndOffsetDays
+                    else -> null
+                }
+                val a = bounds(first)
+                val b = bounds(second)
+                a != null && b != null && a.first <= b.last && b.first <= a.last
+            }
+        }
+    }
+    if (overlapping && duplicateCount == 0) {
+        Text("注意：指定日期與連續日期範圍有重疊；同一 Task 同一時間只會發一次通知。", color = WebWarm, fontSize = 11.sp)
     }
     OutlinedButton(onClick = { onEdit(null) }, modifier = Modifier.fillMaxWidth()) { Text("+ Notification") }
 }
@@ -456,6 +525,7 @@ private fun NotificationsList(
 @Composable
 private fun RuleFormScreen(
     draft: RuleDraft, scrollState: ScrollState, onBack: () -> Unit, onSave: () -> Unit, onDelete: (() -> Unit)?,
+    onSimulate: () -> Unit,
     onAddRelated: (RelatedTaskTemplate?) -> Unit,
     onAddPreparation: (PreparationStep?) -> Unit,
     onAddNotice: (ReminderNotice?) -> Unit,
@@ -533,6 +603,12 @@ private fun RuleFormScreen(
                 }
             }
             OutlinedButton(onClick = { onAddPreparation(null) }, modifier = Modifier.fillMaxWidth()) { Text("+ 準備 Task") }
+        }
+        EditorSection("Simulate / Test", "唔使儲存 Rule，都可以睇生成嘅 Tasks、日期同所有 Notification 時間。") {
+            OutlinedButton(onClick = onSimulate, enabled = draft.valid, modifier = Modifier.fillMaxWidth()) {
+                Text("Simulate Rule · Schedule Preview")
+            }
+            Text("模擬資料不寫入 SQLite；Test Notification 只會即刻發一次測試通知。", color = WebMuted, fontSize = 11.sp)
         }
         EditorSection("Rule 狀態") {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -663,77 +739,129 @@ private fun PreparationFormScreen(
 }
 
 @Composable
+private fun RelativeDaySelector(
+    title: String, position: DayPosition, amount: String,
+    onPositionChange: (DayPosition) -> Unit, onAmountChange: (String) -> Unit,
+) {
+    Text(title, color = WebInk, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+        listOf(DayPosition.BEFORE to "之前", DayPosition.ON to "當日", DayPosition.AFTER to "之後")
+            .forEach { (choice, text) ->
+                OutlinedButton(
+                    onClick = {
+                        if (choice != DayPosition.ON && amount.toIntOrNull() == 0) onAmountChange("1")
+                        onPositionChange(choice)
+                    },
+                    modifier = Modifier.weight(1f),
+                    border = BorderStroke(1.dp, if (position == choice) WebAccent else WebLine),
+                ) { Text(text, color = if (position == choice) WebAccent2 else WebInk, fontSize = 12.sp) }
+            }
+    }
+    if (position != DayPosition.ON) {
+        OutlinedTextField(
+            value = amount, onValueChange = { onAmountChange(it.filter(Char::isDigit)) },
+            label = { Text("N 日（1–1825）") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+        )
+        if (!validDayOffset(position, amount)) Text("請輸入 1–1825 日。", color = WebDanger, fontSize = 11.sp)
+    }
+}
+
+@Composable
 private fun NoticeFormScreen(
     context: Context, draft: NoticeDraft, scrollState: ScrollState, allowWindow: Boolean, onBack: () -> Unit, onSave: () -> Unit,
 ) {
     FullScreenRuleForm(
-        title = "Notification", subtitle = "設定通知日期及實際時間；可新增多個", scrollState = scrollState,
+        title = "Notification", subtitle = "指定日期／連續日期／小時倒數，可自由組合多個通知", scrollState = scrollState,
         onBack = onBack, saveEnabled = draft.valid, onSave = onSave,
     ) {
-        EditorSection("日期規則") {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                val units = buildList {
-                    add(NoticeUnit.DAY to "D-N")
-                    add(NoticeUnit.HOUR to "H-N")
-                    if (allowWindow || draft.unit == NoticeUnit.WINDOW_DAILY) add(NoticeUnit.WINDOW_DAILY to "每日")
-                }
-                units.forEach { (unit, label) ->
-                    OutlinedButton(
-                        onClick = {
-                            draft.unit = unit
-                            if (unit == NoticeUnit.HOUR && draft.anchor in listOf(NoticeAnchor.WINDOW_START, NoticeAnchor.WINDOW_END)) {
-                                draft.anchor = NoticeAnchor.EVENT
-                            }
-                        }, modifier = Modifier.weight(1f),
-                        border = BorderStroke(1.dp, if (draft.unit == unit) WebAccent else WebLine),
-                    ) { Text(label, color = if (draft.unit == unit) WebAccent2 else WebInk) }
+        EditorSection("通知日期規則") {
+            val choices = buildList {
+                add(NoticeUnit.DAY to "指定日期")
+                add(NoticeUnit.DAY_RANGE to "連續日期")
+                add(NoticeUnit.HOUR to "H-N 小時")
+                if (allowWindow || draft.unit == NoticeUnit.WINDOW_DAILY) add(NoticeUnit.WINDOW_DAILY to "合資格日每日")
+            }
+            choices.chunked(2).forEach { rowChoices ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    rowChoices.forEach { (choice, label) ->
+                        OutlinedButton(
+                            onClick = {
+                                draft.unit = choice
+                                if (choice == NoticeUnit.HOUR && draft.anchor in listOf(NoticeAnchor.WINDOW_START, NoticeAnchor.WINDOW_END)) {
+                                    draft.anchor = NoticeAnchor.EVENT
+                                }
+                            }, modifier = Modifier.weight(1f),
+                            border = BorderStroke(1.dp, if (draft.unit == choice) WebAccent else WebLine),
+                        ) { Text(label, color = if (draft.unit == choice) WebAccent2 else WebInk, fontSize = 12.sp) }
+                    }
+                    if (rowChoices.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
-            Text(when (draft.unit) {
-                NoticeUnit.DAY -> "D-N 只計日期，以下可獨立指定幾點通知。"
-                NoticeUnit.HOUR -> "H-N 以 Event / Task 開始時間精確倒數；Full Day 無時間基準。"
-                NoticeUnit.WINDOW_DAILY -> "Range 每個合資格日期提醒，星期六上午最多只到中午。"
-            }, color = WebMuted, fontSize = 12.sp)
-            if (draft.unit != NoticeUnit.WINDOW_DAILY) {
-                OutlinedTextField(
-                    value = draft.amount, onValueChange = { draft.amount = it.filter(Char::isDigit) },
-                    label = { Text(if (draft.unit == NoticeUnit.HOUR) "N 小時前" else "N 日前") },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true,
-                )
-                if (!validBoundedNumber(draft.amount, 1825)) {
-                    Text("請輸入 0–1825。", color = WebDanger, fontSize = 11.sp)
+            when (draft.unit) {
+                NoticeUnit.DAY -> {
+                    Text("指定相對日期，例如 D-2、當日、D+2。", color = WebMuted, fontSize = 12.sp)
+                    RelativeDaySelector(
+                        title = "通知日期", position = draft.position, amount = draft.amount,
+                        onPositionChange = { draft.position = it }, onAmountChange = { draft.amount = it },
+                    )
                 }
-                Text("相對邊個時間計", color = WebInk, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                NoticeUnit.DAY_RANGE -> {
+                    Text("由開始至結束，每日通知一次；唔需要選實際執行日。", color = WebMuted, fontSize = 12.sp)
+                    RelativeDaySelector(
+                        title = "由（包括）", position = draft.rangeStartPosition, amount = draft.rangeStartAmount,
+                        onPositionChange = { draft.rangeStartPosition = it }, onAmountChange = { draft.rangeStartAmount = it },
+                    )
+                    HorizontalDivider(color = WebLine)
+                    RelativeDaySelector(
+                        title = "至（包括）", position = draft.rangeEndPosition, amount = draft.rangeEndAmount,
+                        onPositionChange = { draft.rangeEndPosition = it }, onAmountChange = { draft.rangeEndAmount = it },
+                    )
+                    if (!draft.valid) Text("開始日期不可遲過結束日期，每項 N 為 1–1825。", color = WebDanger, fontSize = 11.sp)
+                }
+                NoticeUnit.HOUR -> {
+                    Text("根據 Event／準備 Task 開始時間倒數，Full Day 無時間基準。", color = WebMuted, fontSize = 12.sp)
+                    OutlinedTextField(
+                        value = draft.amount, onValueChange = { draft.amount = it.filter(Char::isDigit) },
+                        label = { Text("N 小時前（0–1825）") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    )
+                    if (!draft.valid) Text("請輸入 0–1825 小時。", color = WebDanger, fontSize = 11.sp)
+                }
+                NoticeUnit.WINDOW_DAILY -> {
+                    Text("喺 Related Task Range 嘅所有合資格日期通知；會遵守星期六上午限制。", color = WebMuted, fontSize = 12.sp)
+                }
+            }
+            if (draft.unit != NoticeUnit.WINDOW_DAILY) {
+                Text("相對邊個日期／時間計", color = WebInk, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 val anchors = buildList {
                     add(NoticeAnchor.EVENT to "主事項")
                     add(NoticeAnchor.TASK to "此 Task")
-                    if (allowWindow && draft.unit == NoticeUnit.DAY) {
+                    if (allowWindow && draft.unit != NoticeUnit.HOUR) {
                         add(NoticeAnchor.WINDOW_START to "Range 開始")
                         add(NoticeAnchor.WINDOW_END to "Range 最後")
                     }
                 }
-                anchors.chunked(2).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                        row.forEach { (anchor, label) ->
+                anchors.chunked(2).forEach { anchorRow ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        anchorRow.forEach { (anchor, label) ->
                             OutlinedButton(
                                 onClick = { draft.anchor = anchor }, modifier = Modifier.weight(1f),
                                 border = BorderStroke(1.dp, if (draft.anchor == anchor) WebAccent else WebLine),
                             ) { Text(label, color = if (draft.anchor == anchor) WebAccent2 else WebInk, fontSize = 12.sp) }
                         }
-                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                        if (anchorRow.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
             }
         }
         if (draft.unit != NoticeUnit.HOUR) {
-            EditorSection("通知時間", "無預設午夜 00:00；可以每個 D-N 設不同時間。") {
+            EditorSection("通知時間", "相對日數只定日期；唔會喺午夜 00:00 自動通知。") {
                 OutlinedButton(
                     onClick = {
                         TimePickerDialog(context, { _, h, m -> draft.hour = h; draft.minute = m },
                             draft.hour, draft.minute, true).show()
                     }, modifier = Modifier.fillMaxWidth(),
                 ) { Text("通知時間 ${ruleClock(draft.hour, draft.minute)}") }
-                Text("如要 09:00、18:00 都通知，可儲存後再新增一個相同 D-N 嘅 Notification。", color = WebMuted, fontSize = 11.sp)
+                Text("每條通知規則對應一個時間；要每日 09:00、18:00 都通知，新增第二條同樣日期規則即可。", color = WebMuted, fontSize = 11.sp)
             }
         }
     }

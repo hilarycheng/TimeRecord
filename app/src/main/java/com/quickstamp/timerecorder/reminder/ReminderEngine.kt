@@ -61,7 +61,87 @@ object ReminderEngine {
         val at: Instant,
         val urgent: Boolean,
         val canComplete: Boolean,
+        // An explicitly scheduled post-event notice is independent of task completion.
+        val keepAfterCompletion: Boolean = false,
     )
+
+    /** Read-only Rule simulation. The Rule and source event may be unsaved drafts. */
+    data class SimulationTask(
+        val title: String,
+        val kind: ReminderTaskKind,
+        val due: Instant,
+        val expires: Instant,
+        val windowStart: LocalDate?,
+        val windowEnd: LocalDate?,
+        val eligibleDates: List<LocalDate>,
+        val saturdayMorningOnly: Boolean,
+        val holidayDataMissing: Boolean,
+    )
+
+    data class SimulationResult(
+        val tasks: List<SimulationTask>,
+        val notifications: List<NotificationOccurrence>,
+        val totalNotifications: Int,
+        val warnings: List<String>,
+    )
+
+    fun simulateRule(
+        context: Context, rule: ReminderRule, date: LocalDate,
+        startTime: LocalTime?, endTime: LocalTime?,
+    ): SimulationResult {
+        val eventStart = startTime?.let { date.atTime(it).atZone(HkTime.zone) }
+        // The sample end is only for this simulation; it does not create a private event.
+        val eventEnd = if (eventStart == null) {
+            date.plusDays(1).atStartOfDay(HkTime.zone)
+        } else {
+            val sameDayEnd = date.atTime(endTime ?: eventStart.toLocalTime().plusHours(1)).atZone(HkTime.zone)
+            if (sameDayEnd.isAfter(eventStart)) sameDayEnd else sameDayEnd.plusDays(1)
+        }
+        val source = SourceEvent(
+            id = "RULE_SIMULATION_ONLY", source = ReminderSource.PRIVATE,
+            title = rule.name.ifBlank { "模擬事項" }, sourceLabel = "Simulated Event",
+            date = date, start = eventStart, end = eventEnd, rule = rule,
+        )
+        val holidays = HolidayCalendarStore.load(context).holidays
+        val instances = expandSource(source, holidays.mapTo(hashSetOf()) { it.date },
+            holidays.mapTo(hashSetOf()) { it.date.year })
+        // 1825-day offsets on a related window may compound. Cover all valid input bounds.
+        val from = date.minusDays(5500).atStartOfDay(HkTime.zone).toInstant()
+        val to = date.plusDays(5501).atStartOfDay(HkTime.zone).toInstant()
+        val all = instances.flatMap { noticesFor(it, from, to) }
+        // Match the live scheduler's deduplication: same task and instant -> one notification.
+        val ordered = all.distinctBy { it.taskKey to it.at }.sortedBy { it.at }
+        val warnings = mutableListOf<String>()
+        if (!rule.enabled) warnings += "此 Rule 目前已停用；模擬仍會計算，但正式唔會排程。"
+        instances.filter { it.kind == ReminderTaskKind.RELATED }.forEach { task ->
+            if (task.eligibleDates.isEmpty()) warnings += "「${task.title}」喺指定 Range 內冇合資格日期。"
+            if (task.holidayDataMissing) warnings += "「${task.title}」部分年份缺少官方 PH 資料，合資格日期只供參考。"
+        }
+        if (eventStart == null) {
+            if (rule.preparationSteps.any { it.unit == PrepUnit.HOUR })
+                warnings += "Full Day Event 冇開始時間，H-N 準備 Task 唔會生成。"
+            val needsEventTime = rule.notices.any { it.unit == NoticeUnit.HOUR &&
+                (it.anchor == NoticeAnchor.EVENT || it.anchor == NoticeAnchor.TASK) } ||
+                rule.relatedTasks.any { task -> task.notices.any { it.unit == NoticeUnit.HOUR &&
+                    (it.anchor == NoticeAnchor.EVENT || it.anchor == NoticeAnchor.TASK) } } ||
+                rule.preparationSteps.any { step -> step.notices.any { it.unit == NoticeUnit.HOUR &&
+                    it.anchor == NoticeAnchor.EVENT } }
+            if (needsEventTime)
+                warnings += "Full Day Event 冇 Event Start Time；以主事項時間倒數嘅 H-N 通知唔會觸發。"
+        }
+        if (all.size > ordered.size)
+            warnings += "有 ${all.size - ordered.size} 個同 Task 同時間重疊嘅通知，正式只會發一次。"
+        if (ordered.isEmpty()) warnings += "此模擬冇產生任何有效通知，請檢查 Rule 同 Event 時間。"
+        if (ordered.size > 100) warnings += "共有 ${ordered.size} 個通知；可於 Schedule Preview 翻頁查看全部。"
+        return SimulationResult(
+            tasks = instances.map {
+                SimulationTask(it.title, it.kind, it.due.toInstant(), it.expires.toInstant(),
+                    it.windowStart, it.windowEnd, it.eligibleDates, it.saturdayMorning, it.holidayDataMissing)
+            },
+            notifications = ordered, totalNotifications = ordered.size,
+            warnings = warnings.distinct(),
+        )
+    }
 
     fun tasksForDate(context: Context, date: LocalDate): List<ReminderTask> =
         tasksInRange(context, date, date.plusDays(1))
@@ -111,29 +191,43 @@ object ReminderEngine {
         val fromDay = from.atZone(HkTime.zone).toLocalDate()
         val toDay = to.atZone(HkTime.zone).toLocalDate()
         val completed = ReminderStore.completedKeys(context)
-        return instances(context, fromDay.minusDays(2), toDay.plusDays(3))
+        return instances(context, fromDay.minusDays(2), toDay.plusDays(3), includeNoticeBounds = true)
             .asSequence()
-            .filterNot { it.key in completed }
-            .flatMap { inst -> noticesFor(inst).asSequence() }
+            .flatMap { inst ->
+                noticesFor(inst, from, to).asSequence().filter { notice ->
+                    inst.key !in completed || notice.keepAfterCompletion
+                }
+            }
             .filter { !it.at.isBefore(from) && it.at.isBefore(to) }
             .distinctBy { it.taskKey to it.at }
             .sortedBy { it.at }
             .toList()
     }
 
-    private fun noticesFor(inst: TaskInstance): List<NotificationOccurrence> {
+    private fun noticesFor(inst: TaskInstance, from: Instant, to: Instant): List<NotificationOccurrence> {
         val out = mutableListOf<NotificationOccurrence>()
         val event = inst.source
+        // Narrow repeated day ranges to the queried time interval before materialising dates.
+        val firstQueryDay = from.atZone(HkTime.zone).toLocalDate()
+        val lastQueryDay = to.minusNanos(1).atZone(HkTime.zone).toLocalDate()
         inst.notices.forEach { notice ->
+            val baseDate = when (notice.anchor) {
+                NoticeAnchor.EVENT -> event.date
+                NoticeAnchor.TASK -> inst.due.toLocalDate()
+                NoticeAnchor.WINDOW_START -> inst.windowStart
+                NoticeAnchor.WINDOW_END -> inst.windowEnd
+            }
             val moments: List<ZonedDateTime> = when (notice.unit) {
-                NoticeUnit.DAY -> {
-                    val baseDate = when (notice.anchor) {
-                        NoticeAnchor.EVENT -> event.date
-                        NoticeAnchor.TASK -> inst.due.toLocalDate()
-                        NoticeAnchor.WINDOW_START -> inst.windowStart
-                        NoticeAnchor.WINDOW_END -> inst.windowEnd
+                NoticeUnit.DAY -> listOfNotNull(
+                    baseDate?.minusDays(notice.amount.toLong())?.atTime(notice.hour, notice.minute)?.atZone(HkTime.zone)
+                )
+                NoticeUnit.DAY_RANGE -> {
+                    if (baseDate == null || notice.rangeStartOffsetDays > notice.rangeEndOffsetDays) emptyList()
+                    else {
+                        val first = maxOf(baseDate.plusDays(notice.rangeStartOffsetDays.toLong()), firstQueryDay)
+                        val last = minOf(baseDate.plusDays(notice.rangeEndOffsetDays.toLong()), lastQueryDay)
+                        datesBetween(first, last).map { it.atTime(notice.hour, notice.minute).atZone(HkTime.zone) }
                     }
-                    listOfNotNull(baseDate?.minusDays(notice.amount.toLong())?.atTime(notice.hour, notice.minute)?.atZone(HkTime.zone))
                 }
                 NoticeUnit.HOUR -> {
                     val base = when (notice.anchor) {
@@ -150,10 +244,8 @@ object ReminderEngine {
                     }
                 }
             }
-            moments.forEach moment@{ at ->
-                // A timed appointment should not generate a pre-event D-day alert after it starts.
-                if (inst.kind == ReminderTaskKind.EVENT && notice.unit == NoticeUnit.DAY &&
-                    notice.amount == 0 && event.start != null && !at.isBefore(event.start)) return@moment
+            moments.forEach { at ->
+                // Even on D-day, a user-chosen clock time is intentional: never silently drop it.
                 // A related task cannot be completed outside its valid date window.
                 val actionAllowed = when (inst.kind) {
                     ReminderTaskKind.RELATED -> at.toLocalDate() in inst.eligibleDates && at.isBefore(inst.expires)
@@ -171,28 +263,94 @@ object ReminderEngine {
                     at = at.toInstant(),
                     urgent = inst.kind == ReminderTaskKind.RELATED && at.toLocalDate() == inst.eligibleDates.lastOrNull(),
                     canComplete = actionAllowed,
+                    keepAfterCompletion = inst.kind == ReminderTaskKind.EVENT &&
+                        at.toLocalDate().isAfter(event.date),
                 )
             }
         }
         return out
     }
 
-    private fun instances(context: Context, sourceFrom: LocalDate, sourceTo: LocalDate): List<TaskInstance> {
+    /** Relative date intervals used when looking backwards for D+N and forwards for D-N source events. */
+    private data class DayOffsets(val earliest: Int = 0, val latest: Int = 0)
+
+    private fun searchOffsets(rules: List<ReminderRule>, includeNotices: Boolean): DayOffsets {
+        var earliest = 0
+        var latest = 0
+        fun include(a: Int, b: Int = a) {
+            earliest = minOf(earliest, a)
+            latest = maxOf(latest, b)
+        }
+        fun noticeOffsets(notice: ReminderNotice, anchorEarliest: Int, anchorLatest: Int) {
+            when (notice.unit) {
+                NoticeUnit.DAY -> include(anchorEarliest - notice.amount, anchorLatest - notice.amount)
+                NoticeUnit.DAY_RANGE -> include(
+                    anchorEarliest + notice.rangeStartOffsetDays,
+                    anchorLatest + notice.rangeEndOffsetDays,
+                )
+                NoticeUnit.HOUR -> {
+                    val days = (notice.amount + 23) / 24 + 1
+                    include(anchorEarliest - days, anchorLatest)
+                }
+                NoticeUnit.WINDOW_DAILY -> include(anchorEarliest, anchorLatest)
+            }
+        }
+        rules.forEach { rule ->
+            val windowFirst = -maxOf(rule.windowStartDaysBefore, rule.windowEndDaysBefore)
+            val windowLast = -minOf(rule.windowStartDaysBefore, rule.windowEndDaysBefore)
+            val mainWindow = rule.kind == ReminderRuleKind.REQUIRED_WINDOW
+            include(if (mainWindow) windowFirst else 0, if (mainWindow) windowLast else 0)
+            include((if (mainWindow) windowFirst else 0) - rule.persistentDaysBefore)
+            if (includeNotices) rule.notices.forEach { n ->
+                when (n.anchor) {
+                    NoticeAnchor.EVENT -> noticeOffsets(n, 0, 0)
+                    NoticeAnchor.TASK -> noticeOffsets(n, if (mainWindow) windowFirst else 0, if (mainWindow) windowFirst else 0)
+                    NoticeAnchor.WINDOW_START -> if (mainWindow) noticeOffsets(n, windowFirst, windowFirst)
+                    NoticeAnchor.WINDOW_END -> if (mainWindow) noticeOffsets(n, windowLast, windowLast)
+                }
+                if (n.unit == NoticeUnit.WINDOW_DAILY && mainWindow) include(windowFirst, windowLast)
+            }
+            rule.relatedTasks.forEach { child ->
+                val first = -maxOf(child.startDaysBefore, child.endDaysBefore)
+                val last = -minOf(child.startDaysBefore, child.endDaysBefore)
+                include(first - child.displayDaysBeforeWindow, last)
+                if (includeNotices) child.notices.forEach { n ->
+                    when (n.anchor) {
+                        NoticeAnchor.EVENT -> noticeOffsets(n, 0, 0)
+                        NoticeAnchor.TASK -> noticeOffsets(n, first, last) // first eligible day may vary with PH/weekday
+                        NoticeAnchor.WINDOW_START -> noticeOffsets(n, first, first)
+                        NoticeAnchor.WINDOW_END -> noticeOffsets(n, last, last)
+                    }
+                    if (n.unit == NoticeUnit.WINDOW_DAILY) include(first, last)
+                }
+            }
+            rule.preparationSteps.forEach { prep ->
+                val prepFirst = if (prep.unit == PrepUnit.DAY) -prep.amount else -(prep.amount + 23) / 24 - 1
+                val prepLast = if (prep.unit == PrepUnit.DAY) -prep.amount else 0
+                include(prepFirst - prep.displayDaysBefore, prepLast)
+                if (includeNotices) prep.notices.forEach { n ->
+                    when (n.anchor) {
+                        NoticeAnchor.EVENT -> noticeOffsets(n, 0, 0)
+                        NoticeAnchor.TASK -> noticeOffsets(n, prepFirst, prepLast)
+                        else -> Unit
+                    }
+                }
+            }
+        }
+        return DayOffsets(earliest, latest)
+    }
+
+    private fun instances(
+        context: Context, sourceFrom: LocalDate, sourceTo: LocalDate,
+        includeNoticeBounds: Boolean = false,
+    ): List<TaskInstance> {
         val rules = ReminderStore.rules(context).filter { it.enabled }
         if (rules.isEmpty()) return emptyList()
         val byId = rules.associateBy { it.id }
-        val maxDays = rules.flatMap { rule ->
-            rule.notices.map { if (it.unit == NoticeUnit.DAY) it.amount else 0 } +
-                rule.relatedTasks.flatMap { related ->
-                    listOf(related.startDaysBefore, related.endDaysBefore, related.displayDaysBeforeWindow) +
-                        related.notices.map { if (it.unit == NoticeUnit.DAY) it.amount else 0 }
-                } + rule.preparationSteps.flatMap { prep ->
-                    listOf(if (prep.unit == PrepUnit.DAY) prep.amount else 0, prep.displayDaysBefore) +
-                        prep.notices.map { if (it.unit == NoticeUnit.DAY) it.amount else 0 }
-                } + listOf(rule.windowStartDaysBefore, rule.persistentDaysBefore)
-        }.maxOrNull()?.coerceAtMost(1825) ?: 0
-        val calendarFrom = sourceFrom.minusDays(8)
-        val calendarTo = sourceTo.plusDays(maxDays.toLong() + 2)
+        val offsets = searchOffsets(rules, includeNoticeBounds)
+        // Task/notification time = event date + offset. Invert offsets to find source events.
+        val calendarFrom = sourceFrom.minusDays(offsets.latest.toLong() + 2)
+        val calendarTo = sourceTo.minusDays(offsets.earliest.toLong() - 2)
         val sources = mutableListOf<SourceEvent>()
         ReminderStore.privateReminders(context).filter { it.enabled }.forEach { item ->
             val rule = byId[item.ruleId] ?: return@forEach
@@ -220,7 +378,13 @@ object ReminderEngine {
         val holidays = HolidayCalendarStore.load(context).holidays
         val holidayDates = holidays.mapTo(hashSetOf()) { it.date }
         val knownYears = holidays.mapTo(hashSetOf()) { it.date.year }
-        return sources.flatMap { e ->
+        return sources.flatMap { expandSource(it, holidayDates, knownYears) }
+    }
+
+    /** Production and simulation both expand a source using exactly the same rule logic. */
+    private fun expandSource(
+        e: SourceEvent, holidayDates: Set<LocalDate>, knownYears: Set<Int>,
+    ): List<TaskInstance> {
             val key = "${e.source.name}|${e.id}|${e.date}|${e.rule.id}"
             val result = mutableListOf<TaskInstance>()
             val anchorDue = e.start ?: e.date.atStartOfDay(HkTime.zone)
@@ -276,8 +440,7 @@ object ReminderEngine {
                     notices = prep.notices,
                 )
             }
-            result
-        }
+            return result
     }
 
     private fun task(inst: TaskInstance, date: LocalDate): ReminderTask {
@@ -328,7 +491,7 @@ object ReminderEngine {
 
     private fun datesBetween(start: LocalDate, end: LocalDate): List<LocalDate> {
         if (end.isBefore(start)) return emptyList()
-        return (0..ChronoUnit.DAYS.between(start, end).coerceAtMost(730).toInt()).map { start.plusDays(it.toLong()) }
+        return (0..ChronoUnit.DAYS.between(start, end).coerceAtMost(3660).toInt()).map { start.plusDays(it.toLong()) }
     }
 
     private fun rank(status: ReminderTaskStatus): Int = when (status) {

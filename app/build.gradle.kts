@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 27
-        versionName = "2.19-rules-fullscreen"
+        versionCode = 28
+        versionName = "2.20-rule-simulation"
     }
 
     buildFeatures {

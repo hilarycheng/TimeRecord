@@ -1,4 +1,4 @@
-# Time Recorder v2.19 — Full-screen Reminder Rules
+# Time Recorder v2.20 — Relative Notifications + Rule Simulation
 
 Native Android / Jetpack Compose personal commute recorder.
 
@@ -133,3 +133,21 @@ Audio Profile now treats an all-day system Calendar event whose title is exactly
 ### v2.19 validation
 
 - The full-screen Rule screens compile in Kotlin against local API/Compose/model stubs. Navigation and nested-draft retention are statically verified; no Android SDK is installed here, so a real Gradle build, instrumentation and device tests remain outstanding.
+
+
+## v2.20 Signed D-N / D+N & Rule Simulation
+
+- Notification rules now support **D-N / D-Day / D+N** at user-defined local clock times. A signed, inclusive **Day Range** (e.g. D-2 through D+2) delivers one notification per day at that chosen time. Existing D-N/H-N/eligible-window notices remain compatible.
+- System Calendar and private-event lookup ranges are expanded by actual configured offsets, so a D+N alert can be found after the source Event date. Main Event notifications deliberately configured after the date are preserved independently of marking the original Event completed.
+- **Rules → Edit Rule → Simulate Rule** opens a standalone full-screen, read-only preview. Use a sample Event date; toggle Full Day or set Start and End time (Hong Kong time).
+- Simulation uses the **same source-expansion and notification calculations as production**, including PH-aware qualifying dates, Mon–Sat Morning cutoff, independent related/preparation tasks, N-hour timings and overlapping-time deduplication.
+- Preview shows all generated Tasks, can expand all eligible days and pages through all resulting Notification instants (100 per page). Warnings identify no eligible dates, missing holiday-year coverage, absent H-N base on full-day events, duplicate notifications and disabled rules. Historical instants are labeled as past.
+- **Test Notification Now** and individual **Test** buttons immediately post a sample via the real normal/urgent Calendar reminder Notification Channel, honoring its configured sound, vibration, mute/DND and visibility. Android 13+ notification permission is requested *only* when the user explicitly taps Test. A test does not add a Complete action.
+- **Simulation/Test do not save the draft Rule or Event, modify SQLite task completions, mark notifications delivered, alter posted-notification reconciliation ledgers, or schedule an AlarmManager trigger.** Test posts are identified with a distinct notification tag and `[測試]` title.
+- Selecting Simulate doesn't require saving the parent Rule draft. Returning to the Rule editor keeps unsaved edits in memory. Nested Task/Notification drafts must first be accepted back into the parent form to be included in a whole-Rule simulation.
+
+### Verification limitations
+
+- Compiled the pure Kotlin Reminder Engine with local Android API stubs; regression tests passed for two separate D-28 times, post-event D+2 lookup, H-4 and H-N preparation, holiday exclusion, duplicate suppression and full-day warnings. Simulation did not read completion records or write source data.
+- Compiled the full-screen Rule editor and new Rule Simulation screen against Kotlin/Compose API stubs. These checks are **not** an Android Gradle build or real-device validation.
+- **APK build, Android 13+ permission flow, actual sounds/vibration/channel settings, and on-device AlarmManager delivery still require testing in Android Studio or the existing GitHub Actions build pipeline.** Testing a notification immediately does not verify future scheduled alarm reliability.

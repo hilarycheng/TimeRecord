@@ -59,9 +59,16 @@ import java.util.Locale
 
 private fun hm(hour: Int, minute: Int) = "%02d:%02d".format(Locale.ENGLISH, hour, minute)
 
+private fun dayLabel(offset: Int): String = when {
+    offset < 0 -> "D$offset"
+    offset > 0 -> "D+$offset"
+    else -> "D-Day"
+}
+
 internal fun noticeSummary(notice: ReminderNotice): String {
     val prefix = when (notice.unit) {
-        NoticeUnit.DAY -> "D-${notice.amount}"
+        NoticeUnit.DAY -> dayLabel(-notice.amount)
+        NoticeUnit.DAY_RANGE -> "${dayLabel(notice.rangeStartOffsetDays)} 至 ${dayLabel(notice.rangeEndOffsetDays)} · 每日"
         NoticeUnit.HOUR -> "H-${notice.amount}"
         NoticeUnit.WINDOW_DAILY -> "有效期每日"
     }

@@ -1,5 +1,6 @@
 package com.quickstamp.timerecorder.reminder
 
+import android.Manifest
 import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -8,6 +9,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import com.quickstamp.timerecorder.MainActivity
 import com.quickstamp.timerecorder.data.ReminderStore
@@ -29,6 +31,45 @@ object ReminderScheduler {
     private const val KEY_DELIVERED = "delivered_notices"
     private const val NEXT_ALARM_CODE = 62377
     private const val POSTED_SEPARATOR = "\u001F"
+
+    enum class TestNotificationResult { SENT, SENT_SILENT, PERMISSION_REQUIRED, DISABLED }
+
+    /** Immediately post a sample via the real channel. No AlarmManager or delivery ledger writes. */
+    fun testNotificationNow(
+        context: Context, notice: ReminderEngine.NotificationOccurrence,
+    ): TestNotificationResult {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return TestNotificationResult.PERMISSION_REQUIRED
+        }
+        createChannels(context)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        val channelId = if (notice.urgent) URGENT_CHANNEL_ID else CHANNEL_ID
+        if (!nm.areNotificationsEnabled()) return TestNotificationResult.DISABLED
+        val channel = nm.getNotificationChannel(channelId)
+        if (channel == null || channel.importance == NotificationManager.IMPORTANCE_NONE) {
+            return TestNotificationResult.DISABLED
+        }
+        val openApp = PendingIntent.getActivity(
+            context, notice.key.hashCode() xor 0x35709,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val preview = Notification.Builder(context, channelId)
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle("[測試] ${notice.title}")
+            .setContentText(notice.description)
+            .setStyle(Notification.BigTextStyle().bigText(notice.description))
+            .setContentIntent(openApp)
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_REMINDER)
+            .build()
+        // Tagged notifications cannot collide with the integer IDs of production reminders.
+        nm.notify("reminder_rule_simulation", notificationId(notice.key), preview)
+        return if (channel.importance < NotificationManager.IMPORTANCE_DEFAULT || channel.sound == null) {
+            TestNotificationResult.SENT_SILENT
+        } else TestNotificationResult.SENT
+    }
 
     @Synchronized
     fun scheduleAll(context: Context) {
@@ -72,7 +113,8 @@ object ReminderScheduler {
         val due = ReminderEngine.notificationOccurrences(app, from, now.plusSeconds(1))
             .filter { it.at.toEpochMilli() <= now.toEpochMilli() && it.at.isAfter(now.minus(12, ChronoUnit.HOURS)) }
         due.forEach { notice ->
-            if (notice.key !in delivered && !ReminderStore.isCompleted(app, notice.taskKey)) {
+            if (notice.key !in delivered &&
+                (notice.keepAfterCompletion || !ReminderStore.isCompleted(app, notice.taskKey))) {
                 postNotice(app, notice)
                 delivered += notice.key
             }
@@ -137,8 +179,12 @@ object ReminderScheduler {
         val posted = prefs.getStringSet(KEY_POSTED, emptySet()).orEmpty().toMutableSet()
         val nm = context.getSystemService(NotificationManager::class.java)
         val matching = posted.filter { it.substringAfter(POSTED_SEPARATOR, "") == taskKey }
-        matching.forEach { nm.cancel(notificationId(it.substringBefore(POSTED_SEPARATOR))) }
-        posted.removeAll(matching.toSet())
+        val now = Instant.now()
+        val keep = ReminderEngine.notificationOccurrences(context, now.minus(2, ChronoUnit.DAYS), now.plusSeconds(1))
+            .filter { it.taskKey == taskKey && it.keepAfterCompletion }.mapTo(hashSetOf()) { it.key }
+        val removable = matching.filter { it.substringBefore(POSTED_SEPARATOR) !in keep }
+        removable.forEach { nm.cancel(notificationId(it.substringBefore(POSTED_SEPARATOR))) }
+        posted.removeAll(removable.toSet())
         prefs.edit().putStringSet(KEY_POSTED, posted).apply()
     }
 
@@ -149,10 +195,11 @@ object ReminderScheduler {
         val now = Instant.now()
         // Includes countdowns, and preserves multiple independent notices per task.
         val live = ReminderEngine.notificationOccurrences(context, now.minus(2, ChronoUnit.DAYS), now.plusSeconds(1))
-            .mapTo(hashSetOf()) { it.key }
+            .associateBy { it.key }
         val stale = posted.filter { encoded ->
-            encoded.substringBefore(POSTED_SEPARATOR) !in live ||
-                ReminderStore.isCompleted(context, encoded.substringAfter(POSTED_SEPARATOR, ""))
+            val occurrence = live[encoded.substringBefore(POSTED_SEPARATOR)]
+            occurrence == null || (!occurrence.keepAfterCompletion &&
+                ReminderStore.isCompleted(context, encoded.substringAfter(POSTED_SEPARATOR, "")))
         }
         val nm = context.getSystemService(NotificationManager::class.java)
         stale.forEach { nm.cancel(notificationId(it.substringBefore(POSTED_SEPARATOR))) }
