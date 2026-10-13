@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 26
-        versionName = "2.18-advanced-reminders"
+        versionCode = 27
+        versionName = "2.19-rules-fullscreen"
     }
 
     buildFeatures {

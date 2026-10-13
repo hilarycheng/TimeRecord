@@ -1,4 +1,4 @@
-# Time Recorder v2.17 — Private Reminders
+# Time Recorder v2.19 — Full-screen Reminder Rules
 
 Native Android / Jetpack Compose personal commute recorder.
 
@@ -120,3 +120,16 @@ Audio Profile now treats an all-day system Calendar event whose title is exactly
 - Pure Kotlin engine and scheduler: compiled with local Android API stubs and tested with weekday/PH filtering, independent completion, two D-28 times, H-based preparation, and Saturday-morning cutoff.
 - Reminder Rules Compose screen and SQLite store: compiled with local API stubs for syntax/type checks.
 - A full Android Gradle build/device alarm test was **not** possible in this environment. Use the existing GitHub Actions build workflow or Android Studio before deploying this as a production alarm.
+
+
+## v2.19 Full-screen Rule editing
+
+- Replaced the **Rule**, **Related Range Task**, **Preparation Task** and **Notification** form popups with true full-screen, scrollable Compose pages (not Dialogs). The system time picker remains a native time picker.
+- Every editor has an explicit Back / Cancel action and a bottom-pinned Save button; Android system Back navigates to the parent editor instead of exiting Calendar.
+- Unsaved parent Rule / Task form fields and their scroll positions remain intact while you edit a nested Task or Notification. Child edits apply to the draft, and are written to SQLite only when the top-level Rule is saved.
+- Existing Rule, Related Task, Step and Notification IDs, multiple notification schedules, eligibility conditions and SQLite schema remain unchanged. Added inline validation for invalid reversed Range bounds, integer limits and duplicate notification entries.
+- Deleting a Rule still requires a confirmation because linked private events are deleted too; no full-form edit uses a popup. The **Private Event editor** is unchanged in this UI-only release.
+
+### v2.19 validation
+
+- The full-screen Rule screens compile in Kotlin against local API/Compose/model stubs. Navigation and nested-draft retention are statically verified; no Android SDK is installed here, so a real Gradle build, instrumentation and device tests remain outstanding.
