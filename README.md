@@ -99,3 +99,24 @@ Audio Profile now treats an all-day system Calendar event whose title is exactly
 - Reminder notifications are scheduled at each rule's configured time; the notification includes a **完成** action.
 - Editing/deleting/moving a source Calendar event is naturally reflected because reminder instances are regenerated from the current Calendar data; stale posted reminders are reconciled when the app/scheduler runs.
 - Calendar permission failures never delete local/private reminders.
+
+
+## v2.18 Advanced Calendar / Related Tasks / Notifications
+
+- Local Private Events support **Full Day** or an explicit **Start / End date + time**. Existing v2.17 events remain full-day.
+- Reminder Rules combine main Event notifications, automatically derived **Related Range Tasks** and independent **D-N / H-N preparation steps** (e.g. fasting).
+- A Related Task (such as bloodwork before a follow-up) has **one completion key across its entire D-18...D-14 window**; no day selection or appointment scheduling is required. Eligible dates are shown in Calendar.
+- Related Tasks can use every day, Mon–Fri, or Mon–Sat Morning (Saturday ends at 12:00); optionally exclude government-1823 public holidays. If the holiday cache does not cover a relevant year, the UI warns that the dates are provisional.
+- **Multiple independent notifications** per main Event / child Task / preparation step. D-N notifications have their own 24-hour clock times (default 09:00; never silently 00:00). H-N notifications count actual hours from a timed Event or step, including across midnight.
+- A rule can combine D-28, D-14, D-7, D-3, D-1, D-day, multiple times on one day, window-daily reminders and relative-hour alerts.
+- Completing a Related Task stops only its own future notifications; main Event notifications are unaffected. Early countdown notifications do not include a misleading 'Completed' action.
+- An **in-app persistent banner** appears at the top of all pages for active/approaching tasks until the task window/appointment expires or is marked complete. Includes a short Undo for completion. This is not an Android system-wide overlay.
+- Notifications use one rolling upcoming AlarmManager alarm at a time; both exact-alarm special access and notification permission are needed for the best available delivery. Android Doze/battery policies prevent an absolute 100% guarantee. The rolling look-ahead is 400 days and is refreshed on app entry, rescheduling and boot/time changes.
+- Existing `private_reminders.db` upgrades from schema v1 to v2 using non-destructive ALTER TABLE statements, retaining rules, private items and completion records. Legacy rule notification settings are mapped to the new notice schedule. Legacy daily-slot alarms are cancelled on upgrade.
+- Calendar is read-only; Private Events and tasks remain local SQLite (device backup continues to be allowed).
+
+### Validation
+
+- Pure Kotlin engine and scheduler: compiled with local Android API stubs and tested with weekday/PH filtering, independent completion, two D-28 times, H-based preparation, and Saturday-morning cutoff.
+- Reminder Rules Compose screen and SQLite store: compiled with local API stubs for syntax/type checks.
+- A full Android Gradle build/device alarm test was **not** possible in this environment. Use the existing GitHub Actions build workflow or Android Studio before deploying this as a production alarm.

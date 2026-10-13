@@ -19,8 +19,8 @@ android {
         applicationId = "com.quickstamp.timerecorder"
         minSdk = 26
         targetSdk = 37
-        versionCode = 25
-        versionName = "2.17-private-reminders"
+        versionCode = 26
+        versionName = "2.18-advanced-reminders"
     }
 
     buildFeatures {

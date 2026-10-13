@@ -48,7 +48,7 @@ class MainActivity : ComponentActivity() {
             delay(1_500L)
             runCatching { AppStore.autoClosePastDays(applicationContext) }
             runCatching { EtaServiceController.scheduleBackgroundRefresh(applicationContext) }
-            runCatching { ReminderScheduler.scheduleAll(applicationContext) }
+            lifecycleScope.launch(Dispatchers.IO) { runCatching { ReminderScheduler.scheduleAll(applicationContext) } }
         }
     }
 
@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
 
         runCatching { AlarmVolumeGuard.recoverIfNeeded(applicationContext) }
         runCatching { AlarmClockScheduler.scheduleAll(applicationContext) }
-        runCatching { ReminderScheduler.scheduleAll(applicationContext) }
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { ReminderScheduler.scheduleAll(applicationContext) } }
 
         lifecycleScope.launch {
             runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
@@ -97,7 +97,7 @@ class MainActivity : ComponentActivity() {
                 }
                 runCatching { AudioProfileManager.reconcileOnAppOpen(applicationContext) }
                 runCatching { AlarmClockScheduler.scheduleAll(applicationContext) }
-        runCatching { ReminderScheduler.scheduleAll(applicationContext) }
+                lifecycleScope.launch(Dispatchers.IO) { runCatching { ReminderScheduler.scheduleAll(applicationContext) } }
             }
         }
 

@@ -4,10 +4,50 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import org.json.JSONArray
+import org.json.JSONObject
 import java.time.LocalDate
+import java.time.Instant
+import java.time.LocalTime
 import java.util.UUID
 
-enum class ReminderRuleKind { COUNTDOWN, REQUIRED_WINDOW }
+// COUNTDOWN / REQUIRED_WINDOW remain readable for existing v2.17 records.
+enum class ReminderRuleKind { COUNTDOWN, REQUIRED_WINDOW, COMBINED }
+enum class NoticeUnit { DAY, HOUR, WINDOW_DAILY }
+enum class NoticeAnchor { EVENT, TASK, WINDOW_START, WINDOW_END }
+enum class EligibleDays { EVERY_DAY, MON_FRI, MON_SAT_MORNING }
+enum class PrepUnit { DAY, HOUR }
+
+data class ReminderNotice(
+    val id: String = UUID.randomUUID().toString(),
+    val unit: NoticeUnit = NoticeUnit.DAY,
+    val amount: Int = 0,
+    val hour: Int = 9,
+    val minute: Int = 0,
+    val anchor: NoticeAnchor = NoticeAnchor.EVENT,
+)
+
+data class RelatedTaskTemplate(
+    val id: String = UUID.randomUUID().toString(),
+    val title: String,
+    val startDaysBefore: Int = 18,
+    val endDaysBefore: Int = 14,
+    val eligibleDays: EligibleDays = EligibleDays.MON_FRI,
+    val excludePublicHolidays: Boolean = true,
+    val displayDaysBeforeWindow: Int = 0,
+    val notices: List<ReminderNotice> = emptyList(),
+)
+
+data class PreparationStep(
+    val id: String = UUID.randomUUID().toString(),
+    val title: String,
+    val unit: PrepUnit = PrepUnit.DAY,
+    val amount: Int = 1,
+    val hour: Int = 9,
+    val minute: Int = 0,
+    val displayDaysBefore: Int = 0,
+    val notices: List<ReminderNotice> = emptyList(),
+)
 
 data class ReminderRule(
     val id: String = UUID.randomUUID().toString(),
@@ -20,6 +60,10 @@ data class ReminderRule(
     val notifyHour: Int = 9,
     val notifyMinute: Int = 0,
     val enabled: Boolean = true,
+    val notices: List<ReminderNotice> = listOf(28, 14, 7, 3, 1, 0).map { ReminderNotice(unit = NoticeUnit.DAY, amount = it) },
+    val relatedTasks: List<RelatedTaskTemplate> = emptyList(),
+    val preparationSteps: List<PreparationStep> = emptyList(),
+    val persistentDaysBefore: Int = 0,
 )
 
 data class PrivateReminder(
@@ -28,10 +72,15 @@ data class PrivateReminder(
     val anchorDate: LocalDate,
     val ruleId: String,
     val enabled: Boolean = true,
+    // All day if startTime == null. A timed event must have an end time.
+    val startTime: LocalTime? = null,
+    val endDate: LocalDate? = null,
+    val endTime: LocalTime? = null,
 )
 
 enum class ReminderSource { PRIVATE, CALENDAR }
-enum class ReminderTaskStatus { COUNTDOWN, WINDOW_ACTIVE, LAST_DAY, OVERDUE }
+enum class ReminderTaskStatus { COUNTDOWN, WINDOW_ACTIVE, LAST_DAY, OVERDUE, UPCOMING }
+enum class ReminderTaskKind { EVENT, RELATED, PREPARATION }
 
 data class ReminderTask(
     val taskKey: String,
@@ -47,53 +96,53 @@ data class ReminderTask(
     val daysUntilAnchor: Long,
     val windowStart: LocalDate? = null,
     val windowEnd: LocalDate? = null,
+    val taskDate: LocalDate = anchorDate.minusDays(daysUntilAnchor),
+    val taskKind: ReminderTaskKind = ReminderTaskKind.EVENT,
+    val eligibleDates: List<LocalDate> = emptyList(),
+    val saturdayMorningOnly: Boolean = false,
+    val holidayDataMissing: Boolean = false,
+    val canCompleteFrom: Instant? = null,
+    val taskExpiresAt: Instant? = null,
 )
 
 object ReminderStore {
     private const val DB_NAME = "private_reminders.db"
-    private const val DB_VERSION = 1
+    private const val DB_VERSION = 2
     private const val PREFS = "reminder_store_meta"
     private const val KEY_VERSION = "version"
 
     private class Db(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
         override fun onCreate(db: SQLiteDatabase) {
-            db.execSQL(
-                """
-                CREATE TABLE rules(
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    keywords TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    countdown_days TEXT NOT NULL,
-                    window_start INTEGER NOT NULL,
-                    window_end INTEGER NOT NULL,
-                    notify_hour INTEGER NOT NULL,
-                    notify_minute INTEGER NOT NULL,
-                    enabled INTEGER NOT NULL
-                )
-                """.trimIndent()
-            )
-            db.execSQL(
-                """
-                CREATE TABLE private_reminders(
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    anchor_date TEXT NOT NULL,
-                    rule_id TEXT NOT NULL,
-                    enabled INTEGER NOT NULL
-                )
-                """.trimIndent()
-            )
-            db.execSQL(
-                """
-                CREATE TABLE completions(
-                    task_key TEXT PRIMARY KEY,
-                    completed_at INTEGER NOT NULL
-                )
-                """.trimIndent()
-            )
+            db.execSQL("""CREATE TABLE rules(
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, keywords TEXT NOT NULL,
+                kind TEXT NOT NULL, countdown_days TEXT NOT NULL,
+                window_start INTEGER NOT NULL, window_end INTEGER NOT NULL,
+                notify_hour INTEGER NOT NULL, notify_minute INTEGER NOT NULL,
+                enabled INTEGER NOT NULL, notices TEXT NOT NULL DEFAULT '[]',
+                related_tasks TEXT NOT NULL DEFAULT '[]',
+                preparation_steps TEXT NOT NULL DEFAULT '[]', persistent_days INTEGER NOT NULL DEFAULT 0
+            )""".trimIndent())
+            db.execSQL("""CREATE TABLE private_reminders(
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, anchor_date TEXT NOT NULL,
+                rule_id TEXT NOT NULL, enabled INTEGER NOT NULL,
+                start_time TEXT, end_date TEXT, end_time TEXT
+            )""".trimIndent())
+            db.execSQL("CREATE TABLE completions(task_key TEXT PRIMARY KEY, completed_at INTEGER NOT NULL)")
         }
-        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            if (oldVersion < 2) {
+                // Non-destructive: preserve all v2.17 rules, private reminders and completions.
+                db.execSQL("ALTER TABLE rules ADD COLUMN notices TEXT")
+                db.execSQL("ALTER TABLE rules ADD COLUMN related_tasks TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE rules ADD COLUMN preparation_steps TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE rules ADD COLUMN persistent_days INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE private_reminders ADD COLUMN start_time TEXT")
+                db.execSQL("ALTER TABLE private_reminders ADD COLUMN end_date TEXT")
+                db.execSQL("ALTER TABLE private_reminders ADD COLUMN end_time TEXT")
+                // notices=NULL identifies legacy rules; their prior settings are restored when read.
+            }
+        }
     }
 
     private fun db(context: Context) = Db(context.applicationContext)
@@ -106,28 +155,28 @@ object ReminderStore {
     fun rules(context: Context): List<ReminderRule> {
         val out = mutableListOf<ReminderRule>()
         db(context).readableDatabase.query("rules", null, null, null, null, null, "name COLLATE NOCASE").use { c ->
-            val id = c.getColumnIndexOrThrow("id")
-            val name = c.getColumnIndexOrThrow("name")
-            val keywords = c.getColumnIndexOrThrow("keywords")
-            val kind = c.getColumnIndexOrThrow("kind")
-            val countdown = c.getColumnIndexOrThrow("countdown_days")
-            val ws = c.getColumnIndexOrThrow("window_start")
-            val we = c.getColumnIndexOrThrow("window_end")
-            val h = c.getColumnIndexOrThrow("notify_hour")
-            val m = c.getColumnIndexOrThrow("notify_minute")
-            val enabled = c.getColumnIndexOrThrow("enabled")
             while (c.moveToNext()) {
+                fun string(field: String): String = c.getString(c.getColumnIndexOrThrow(field)).orEmpty()
+                fun number(field: String): Int = c.getInt(c.getColumnIndexOrThrow(field))
+                val kind = runCatching { ReminderRuleKind.valueOf(string("kind")) }.getOrDefault(ReminderRuleKind.COUNTDOWN)
+                val days = decodeDays(string("countdown_days"))
+                val h = number("notify_hour").coerceIn(0, 23)
+                val m = number("notify_minute").coerceIn(0, 59)
+                val noticesRaw = c.getString(c.getColumnIndexOrThrow("notices"))
+                val notices = if (noticesRaw == null) {
+                    if (kind == ReminderRuleKind.REQUIRED_WINDOW) listOf(ReminderNotice(unit = NoticeUnit.WINDOW_DAILY, hour = h, minute = m))
+                    else days.map { ReminderNotice(unit = NoticeUnit.DAY, amount = it, hour = h, minute = m) }
+                } else decodeNotices(noticesRaw)
                 out += ReminderRule(
-                    id = c.getString(id),
-                    name = c.getString(name),
-                    keywords = decodeKeywords(c.getString(keywords)),
-                    kind = runCatching { ReminderRuleKind.valueOf(c.getString(kind)) }.getOrDefault(ReminderRuleKind.COUNTDOWN),
-                    countdownDaysBefore = decodeDays(c.getString(countdown)),
-                    windowStartDaysBefore = c.getInt(ws),
-                    windowEndDaysBefore = c.getInt(we),
-                    notifyHour = c.getInt(h).coerceIn(0, 23),
-                    notifyMinute = c.getInt(m).coerceIn(0, 59),
-                    enabled = c.getInt(enabled) != 0,
+                    id = string("id"), name = string("name"), keywords = decodeKeywords(string("keywords")),
+                    kind = kind, countdownDaysBefore = days,
+                    windowStartDaysBefore = number("window_start"), windowEndDaysBefore = number("window_end"),
+                    notifyHour = h, notifyMinute = m,
+                    enabled = number("enabled") != 0,
+                    notices = notices,
+                    relatedTasks = decodeRelated(string("related_tasks")),
+                    preparationSteps = decodePreparation(string("preparation_steps")),
+                    persistentDaysBefore = number("persistent_days").coerceAtLeast(0),
                 )
             }
         }
@@ -146,6 +195,10 @@ object ReminderStore {
             put("notify_hour", rule.notifyHour)
             put("notify_minute", rule.notifyMinute)
             put("enabled", if (rule.enabled) 1 else 0)
+            put("notices", encodeNotices(rule.notices))
+            put("related_tasks", encodeRelated(rule.relatedTasks))
+            put("preparation_steps", encodePreparation(rule.preparationSteps))
+            put("persistent_days", rule.persistentDaysBefore.coerceAtLeast(0))
         }
         db(context).writableDatabase.insertWithOnConflict("rules", null, v, SQLiteDatabase.CONFLICT_REPLACE)
         bump(context)
@@ -165,14 +218,16 @@ object ReminderStore {
     fun privateReminders(context: Context): List<PrivateReminder> {
         val out = mutableListOf<PrivateReminder>()
         db(context).readableDatabase.query("private_reminders", null, null, null, null, null, "anchor_date ASC").use { c ->
-            val id = c.getColumnIndexOrThrow("id")
-            val title = c.getColumnIndexOrThrow("title")
-            val date = c.getColumnIndexOrThrow("anchor_date")
-            val ruleId = c.getColumnIndexOrThrow("rule_id")
-            val enabled = c.getColumnIndexOrThrow("enabled")
             while (c.moveToNext()) {
-                val parsed = runCatching { LocalDate.parse(c.getString(date)) }.getOrNull() ?: continue
-                out += PrivateReminder(c.getString(id), c.getString(title), parsed, c.getString(ruleId), c.getInt(enabled) != 0)
+                fun string(field: String): String? = c.getString(c.getColumnIndexOrThrow(field))
+                val date = runCatching { LocalDate.parse(string("anchor_date")) }.getOrNull() ?: continue
+                out += PrivateReminder(
+                    id = string("id").orEmpty(), title = string("title").orEmpty(), anchorDate = date,
+                    ruleId = string("rule_id").orEmpty(), enabled = c.getInt(c.getColumnIndexOrThrow("enabled")) != 0,
+                    startTime = parseTime(string("start_time")),
+                    endDate = string("end_date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
+                    endTime = parseTime(string("end_time")),
+                )
             }
         }
         return out
@@ -185,6 +240,9 @@ object ReminderStore {
             put("anchor_date", reminder.anchorDate.toString())
             put("rule_id", reminder.ruleId)
             put("enabled", if (reminder.enabled) 1 else 0)
+            put("start_time", reminder.startTime?.toString())
+            put("end_date", reminder.endDate?.toString())
+            put("end_time", reminder.endTime?.toString())
         }
         db(context).writableDatabase.insertWithOnConflict("private_reminders", null, v, SQLiteDatabase.CONFLICT_REPLACE)
         bump(context)
@@ -194,7 +252,6 @@ object ReminderStore {
         db(context).writableDatabase.delete("private_reminders", "id=?", arrayOf(id))
         bump(context)
     }
-
 
     fun completedKeys(context: Context): Set<String> {
         val out = linkedSetOf<String>()
@@ -222,7 +279,79 @@ object ReminderStore {
         bump(context)
     }
 
-    private fun encodeKeywords(values: List<String>): String = values.map { it.trim() }.filter { it.isNotBlank() }.joinToString("\u001F")
-    private fun decodeKeywords(raw: String): List<String> = raw.split('\u001F').map { it.trim() }.filter { it.isNotBlank() }
-    private fun decodeDays(raw: String): List<Int> = raw.split(',').mapNotNull { it.trim().toIntOrNull() }.map { it.coerceAtLeast(0) }.distinct().sortedDescending().ifEmpty { listOf(14,3,1,0) }
+    private fun parseTime(raw: String?): LocalTime? = raw?.takeIf { it.isNotBlank() }?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
+    private fun encodeKeywords(values: List<String>) = values.map { it.trim() }.filter { it.isNotBlank() }.joinToString("\u001F")
+    private fun decodeKeywords(raw: String) = raw.split('\u001F').map { it.trim() }.filter { it.isNotBlank() }
+    private fun decodeDays(raw: String) = raw.split(',').mapNotNull { it.trim().toIntOrNull() }.map { it.coerceAtLeast(0) }.distinct().sortedDescending().ifEmpty { listOf(14,3,1,0) }
+
+    private fun encodeNotices(items: List<ReminderNotice>): String = JSONArray().apply {
+        items.forEach { n -> put(JSONObject().apply {
+            put("id", n.id); put("unit", n.unit.name); put("amount", n.amount.coerceAtLeast(0))
+            put("hour", n.hour.coerceIn(0, 23)); put("minute", n.minute.coerceIn(0, 59)); put("anchor", n.anchor.name)
+        }) }
+    }.toString()
+
+    private fun decodeNotices(raw: String): List<ReminderNotice> = runCatching {
+        val arr = JSONArray(raw)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val x = arr.optJSONObject(i) ?: continue
+                add(ReminderNotice(
+                    id = x.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    unit = runCatching { NoticeUnit.valueOf(x.optString("unit")) }.getOrDefault(NoticeUnit.DAY),
+                    amount = x.optInt("amount").coerceAtLeast(0),
+                    hour = x.optInt("hour", 9).coerceIn(0, 23), minute = x.optInt("minute").coerceIn(0, 59),
+                    anchor = runCatching { NoticeAnchor.valueOf(x.optString("anchor")) }.getOrDefault(NoticeAnchor.EVENT),
+                ))
+            }
+        }
+    }.getOrDefault(emptyList())
+
+    private fun encodeRelated(items: List<RelatedTaskTemplate>) = JSONArray().apply {
+        items.forEach { t -> put(JSONObject().apply {
+            put("id", t.id); put("title", t.title); put("start", t.startDaysBefore); put("end", t.endDaysBefore)
+            put("days", t.eligibleDays.name); put("excludePH", t.excludePublicHolidays)
+            put("displayLead", t.displayDaysBeforeWindow); put("notices", JSONArray(encodeNotices(t.notices)))
+        }) }
+    }.toString()
+    private fun decodeRelated(raw: String): List<RelatedTaskTemplate> = runCatching {
+        val arr = JSONArray(raw)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val x = arr.optJSONObject(i) ?: continue
+                if (x.optString("title").isBlank()) continue
+                add(RelatedTaskTemplate(
+                    id = x.optString("id").ifBlank { UUID.randomUUID().toString() }, title = x.optString("title"),
+                    startDaysBefore = x.optInt("start", 18).coerceAtLeast(0), endDaysBefore = x.optInt("end", 14).coerceAtLeast(0),
+                    eligibleDays = runCatching { EligibleDays.valueOf(x.optString("days")) }.getOrDefault(EligibleDays.MON_FRI),
+                    excludePublicHolidays = x.optBoolean("excludePH", true), displayDaysBeforeWindow = x.optInt("displayLead").coerceAtLeast(0),
+                    notices = decodeNotices(x.optJSONArray("notices")?.toString() ?: "[]"),
+                ))
+            }
+        }
+    }.getOrDefault(emptyList())
+
+    private fun encodePreparation(items: List<PreparationStep>) = JSONArray().apply {
+        items.forEach { s -> put(JSONObject().apply {
+            put("id", s.id); put("title", s.title); put("unit", s.unit.name); put("amount", s.amount)
+            put("hour", s.hour); put("minute", s.minute); put("displayLead", s.displayDaysBefore)
+            put("notices", JSONArray(encodeNotices(s.notices)))
+        }) }
+    }.toString()
+    private fun decodePreparation(raw: String): List<PreparationStep> = runCatching {
+        val arr = JSONArray(raw)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val x = arr.optJSONObject(i) ?: continue
+                if (x.optString("title").isBlank()) continue
+                add(PreparationStep(
+                    id = x.optString("id").ifBlank { UUID.randomUUID().toString() }, title = x.optString("title"),
+                    unit = runCatching { PrepUnit.valueOf(x.optString("unit")) }.getOrDefault(PrepUnit.DAY),
+                    amount = x.optInt("amount").coerceAtLeast(0), hour = x.optInt("hour", 9).coerceIn(0, 23),
+                    minute = x.optInt("minute").coerceIn(0, 59), displayDaysBefore = x.optInt("displayLead").coerceAtLeast(0),
+                    notices = decodeNotices(x.optJSONArray("notices")?.toString() ?: "[]"),
+                ))
+            }
+        }
+    }.getOrDefault(emptyList())
 }

@@ -7,6 +7,7 @@ import android.provider.CalendarContract
 import com.quickstamp.timerecorder.model.HkTime
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneOffset
 
 data class SystemCalendarEvent(
@@ -16,6 +17,8 @@ data class SystemCalendarEvent(
     val date: LocalDate,
     val allDay: Boolean,
     val calendarName: String,
+    val startAt: LocalDateTime? = null,
+    val endAt: LocalDateTime? = null,
 )
 
 object SystemCalendarReader {
@@ -32,6 +35,7 @@ object SystemCalendarReader {
                 CalendarContract.Instances.TITLE,
                 CalendarContract.Instances.ALL_DAY,
                 CalendarContract.Instances.BEGIN,
+                CalendarContract.Instances.END,
                 CalendarContract.Instances.CALENDAR_DISPLAY_NAME,
             )
             val out = mutableListOf<SystemCalendarEvent>()
@@ -41,6 +45,7 @@ object SystemCalendarReader {
                 val allDayIndex = c.getColumnIndex(CalendarContract.Instances.ALL_DAY)
                 val beginIndex = c.getColumnIndex(CalendarContract.Instances.BEGIN)
                 val calendarIndex = c.getColumnIndex(CalendarContract.Instances.CALENDAR_DISPLAY_NAME)
+                val endIndex = c.getColumnIndex(CalendarContract.Instances.END)
                 while (c.moveToNext()) {
                     if (eventIdIndex < 0 || titleIndex < 0 || beginIndex < 0) continue
                     val eventId = c.getLong(eventIdIndex)
@@ -61,6 +66,9 @@ object SystemCalendarReader {
                         date = date,
                         allDay = allDay,
                         calendarName = if (calendarIndex >= 0) c.getString(calendarIndex).orEmpty() else "Calendar",
+                        startAt = if (allDay) null else Instant.ofEpochMilli(beginMs).atZone(HkTime.zone).toLocalDateTime(),
+                        endAt = if (endIndex < 0) null else Instant.ofEpochMilli(c.getLong(endIndex))
+                            .atZone(if (allDay) ZoneOffset.UTC else HkTime.zone).toLocalDateTime(),
                     )
                 }
             }

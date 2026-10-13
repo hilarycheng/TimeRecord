@@ -1,6 +1,10 @@
 package com.quickstamp.timerecorder.ui
 
 import android.Manifest
+import android.app.AlarmManager
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -81,6 +85,8 @@ internal fun HolidayCalendarPage(
     var refreshing by remember { mutableStateOf(false) }
     var rulesOpen by remember { mutableStateOf(false) }
     var addPrivateOpen by remember { mutableStateOf(false) }
+    var editingPrivate by remember { mutableStateOf<PrivateReminder?>(null) }
+    var undoCompleted by remember { mutableStateOf<ReminderTask?>(null) }
     var localRevision by remember { mutableIntStateOf(ReminderStore.version(context)) }
     var rules by remember { mutableStateOf(ReminderStore.rules(context)) }
     var privateReminders by remember { mutableStateOf(ReminderStore.privateReminders(context)) }
@@ -92,14 +98,22 @@ internal fun HolidayCalendarPage(
     var notificationGranted by remember {
         mutableStateOf(Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
     }
+    var exactGranted by remember {
+        mutableStateOf(Build.VERSION.SDK_INT < 31 || context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms())
+    }
     val scope = rememberCoroutineScope()
 
     val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         calendarGranted = granted
         localRevision += 1
+        scope.launch(Dispatchers.IO) { runCatching { ReminderScheduler.scheduleAll(context.applicationContext) } }
     }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         notificationGranted = granted
+    }
+    val exactPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        exactGranted = Build.VERSION.SDK_INT < 31 || context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+        scope.launch(Dispatchers.IO) { ReminderScheduler.scheduleAll(context.applicationContext) }
     }
 
     suspend fun refreshOfficial() {
@@ -107,12 +121,14 @@ internal fun HolidayCalendarPage(
         refreshing = true
         cache = withContext(Dispatchers.IO) { HolidayCalendarStore.refresh(context.applicationContext) }
         runCatching { AlarmClockScheduler.scheduleAll(context.applicationContext) }
+        scope.launch(Dispatchers.IO) { runCatching { ReminderScheduler.scheduleAll(context.applicationContext) } }
+        localRevision += 1
         refreshing = false
     }
 
     fun localChanged() {
         localRevision = ReminderStore.version(context)
-        runCatching { ReminderScheduler.scheduleAll(context.applicationContext) }
+        scope.launch(Dispatchers.IO) { runCatching { ReminderScheduler.scheduleAll(context.applicationContext) } }
     }
 
     LaunchedEffect(Unit) {
@@ -150,7 +166,7 @@ internal fun HolidayCalendarPage(
     val byDate = cache.holidays.groupBy { it.date }
     val systemByDate = systemEvents.groupBy { it.date }
     val privateByDate = privateReminders.groupBy { it.anchorDate }
-    val taskByDate = monthTasks.groupBy { it.anchorDate.minusDays(it.daysUntilAnchor) }
+    val taskByDate = monthTasks.groupBy { it.taskDate }
     val selected = selectedDate
     val selectedHolidays = selected?.let { byDate[it].orEmpty() }.orEmpty()
     val selectedEvents = selected?.let { systemByDate[it].orEmpty() }.orEmpty()
@@ -233,6 +249,21 @@ internal fun HolidayCalendarPage(
             }
         }
 
+        if (!exactGranted && Build.VERSION.SDK_INT >= 31) {
+            Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp),
+                color = WebCard, border = BorderStroke(1.dp, WebWarm)) {
+                Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("精確通知權限未開", color = WebWarm, fontWeight = FontWeight.Black)
+                    Text("指定 09:00／H-12 等通知可能被 Android 延遲。請開啟 Alarms & reminders 特別權限。", color = WebMuted, fontSize = 11.sp)
+                    OutlinedButton(onClick = {
+                        exactPermission.launch(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        })
+                    }, modifier = Modifier.fillMaxWidth()) { Text("開啟精確通知權限") }
+                }
+            }
+        }
+
         if (selected != null) {
             Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = WebCard, border = BorderStroke(1.dp, if (selectedTasks.isNotEmpty()) WebWarm.copy(alpha = .65f) else if (selectedHolidays.isNotEmpty()) WebAccent else WebLine)) {
                 Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -241,11 +272,15 @@ internal fun HolidayCalendarPage(
                         Text("無特別事項", fontSize = 14.sp, color = WebInk, fontWeight = FontWeight.Bold)
                     }
                     selectedHolidays.forEach { Text("假 · ${it.name}", fontSize = 14.sp, color = Color(0xFFFF9EC6), fontWeight = FontWeight.Black) }
-                    selectedEvents.forEach { Text("● ${it.title}  · ${it.calendarName}", fontSize = 12.sp, color = WebBus, fontWeight = FontWeight.Bold) }
+                    selectedEvents.forEach { e ->
+                        val time = if (e.allDay) "Full Day" else "${e.startAt?.toLocalTime()}–${e.endAt?.toLocalTime()}"
+                        Text("● ${e.title} · $time · ${e.calendarName}", fontSize = 12.sp, color = WebBus, fontWeight = FontWeight.Bold)
+                    }
                     selectedPrivate.forEach { reminder ->
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("◆ ${reminder.title}", fontSize = 13.sp, color = WebAccent2, fontWeight = FontWeight.Black)
+                            Column(Modifier.weight(1f).clickable { editingPrivate = reminder }) {
+                                Text("◆ ${reminder.title} · ${if (reminder.startTime == null) "Full Day" else "${reminder.startTime}–${reminder.endTime}"}",
+                                    fontSize = 13.sp, color = WebAccent2, fontWeight = FontWeight.Black)
                                 val rule = rules.firstOrNull { it.id == reminder.ruleId }
                                 if (rule != null) Text(ruleSummary(rule), fontSize = 9.sp, color = WebMuted)
                             }
@@ -258,12 +293,36 @@ internal fun HolidayCalendarPage(
                                 Column(Modifier.weight(1f)) {
                                     Text("! ${task.title}", color = WebInk, fontSize = 12.sp, fontWeight = FontWeight.Black)
                                     Text("${task.ruleName} · ${ReminderEngine.displayStatus(task, selected)}", color = WebWarm, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                    if (task.windowStart != null) {
+                                        Text("合資格日期：${ReminderEngine.eligibleDatesSummary(task)}", color = WebBus, fontSize = 10.sp)
+                                    }
                                 }
                                 Button(
-                                    onClick = { ReminderScheduler.complete(context, task.taskKey); localChanged() },
+                                    enabled = (task.windowStart == null || task.eligibleDates.isNotEmpty()) &&
+                                        !task.taskDate.isAfter(HkTime.today()) &&
+                                        (task.taskDate != HkTime.today() || task.canCompleteFrom == null ||
+                                            !Instant.now().isBefore(task.canCompleteFrom)),
+                                    onClick = { scope.launch(Dispatchers.IO) {
+                                        ReminderScheduler.complete(context, task.taskKey)
+                                        withContext(Dispatchers.Main) {
+                                            undoCompleted = task
+                                            localChanged()
+                                        }
+                                    } },
                                     colors = ButtonDefaults.buttonColors(containerColor = WebGoodSoft, contentColor = WebGood),
                                 ) { Text("完成", fontWeight = FontWeight.Black, fontSize = 10.sp) }
                             }
+                        }
+                    }
+                    undoCompleted?.let { completed ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("已完成：${completed.title}", color = WebGood, modifier = Modifier.weight(1f), fontSize = 11.sp)
+                            TextButton(onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    ReminderScheduler.undoComplete(context, completed.taskKey)
+                                    withContext(Dispatchers.Main) { undoCompleted = null; localChanged() }
+                                }
+                            }) { Text("Undo", color = WebAccent2) }
                         }
                     }
                 }
@@ -289,6 +348,19 @@ internal fun HolidayCalendarPage(
         }
     }
 
+    editingPrivate?.let { item ->
+        PrivateReminderDialog(
+            context = context, initialDate = item.anchorDate, rules = rules,
+            initial = item, onDismiss = { editingPrivate = null },
+            onSave = { updated ->
+                ReminderStore.upsertPrivateReminder(context, updated)
+                editingPrivate = null
+                month = YearMonth.from(updated.anchorDate)
+                selectedDate = updated.anchorDate
+                localChanged()
+            },
+        )
+    }
     if (addPrivateOpen) {
         PrivateReminderDialog(
             context = context,

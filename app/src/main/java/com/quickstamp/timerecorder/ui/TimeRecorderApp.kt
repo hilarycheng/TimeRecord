@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -134,6 +135,8 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
     var feedback by remember { mutableStateOf<TapFeedback?>(null) }
     var reminderVersion by remember { mutableStateOf(ReminderStore.version(context)) }
     var todayReminderTasks by remember { mutableStateOf<List<ReminderTask>>(emptyList()) }
+    var pinnedReminderTasks by remember { mutableStateOf<List<ReminderTask>>(emptyList()) }
+    var undoReminderTask by remember { mutableStateOf<ReminderTask?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val io = remember { Executors.newSingleThreadExecutor() }
@@ -200,8 +203,21 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
     }
 
     suspend fun reloadReminders() {
-        todayReminderTasks = withContext(Dispatchers.IO) { ReminderEngine.tasksForDate(context.applicationContext, HkTime.today()) }
+        val loaded = withContext(Dispatchers.IO) {
+            ReminderEngine.tasksForDate(context.applicationContext, HkTime.today()) to
+                ReminderEngine.persistentTasks(context.applicationContext)
+        }
+        todayReminderTasks = loaded.first
+        pinnedReminderTasks = loaded.second
         reminderVersion = ReminderStore.version(context)
+    }
+
+    fun completeReminder(task: ReminderTask) {
+        undoReminderTask = task
+        scope.launch {
+            withContext(Dispatchers.IO) { ReminderScheduler.complete(context.applicationContext, task.taskKey) }
+            reloadReminders()
+        }
     }
 
     fun refreshEta(mode: CommuteMode) {
@@ -248,6 +264,12 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
     }
 
     LaunchedEffect(Unit) { reloadReminders() }
+    LaunchedEffect(undoReminderTask?.taskKey) {
+        if (undoReminderTask != null) {
+            delay(8_000L)
+            undoReminderTask = null
+        }
+    }
 
     LaunchedEffect(feedback?.timestamp) {
         if (feedback != null) {
@@ -336,6 +358,22 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
             )
         }
     ) {
+        Column(Modifier.fillMaxSize().background(WebBg).statusBarsPadding()) {
+            if (pinnedReminderTasks.isNotEmpty() || undoReminderTask != null) {
+                GlobalPinnedReminderBanner(
+                    tasks = pinnedReminderTasks, today = HkTime.today(now),
+                    undoTask = undoReminderTask,
+                    onComplete = { completeReminder(it) },
+                    onUndo = { task ->
+                        undoReminderTask = null
+                        scope.launch {
+                            withContext(Dispatchers.IO) { ReminderScheduler.undoComplete(context.applicationContext, task.taskKey) }
+                            reloadReminders()
+                        }
+                    },
+                )
+            }
+            Box(Modifier.weight(1f)) {
         if (alarmOpen) {
             AlarmClockPage(onBack = { alarmOpen = false })
         } else if (audioProfileOpen) {
@@ -384,19 +422,6 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
                         onHistory = { historyOpen = true },
                         onSettings = { scope.launch { drawerState.open() } },
                     )
-                }
-
-                if (isToday && todayReminderTasks.isNotEmpty()) {
-                    item {
-                        TodayMustDoCard(
-                            tasks = todayReminderTasks,
-                            today = today,
-                            onComplete = { task ->
-                                ReminderScheduler.complete(context, task.taskKey)
-                                scope.launch { reloadReminders() }
-                            },
-                        )
-                    }
                 }
 
                 if (summary.complete && events.isNotEmpty()) {
@@ -511,6 +536,8 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
             }
         }
         }
+            }
+        }
     }
 
     editing?.let { event ->
@@ -572,6 +599,53 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
 }
 
 private fun feedbackFor(feedback: TapFeedback?, key: String): String? = if (feedback?.key == key) feedback.text else null
+
+@Composable
+private fun GlobalPinnedReminderBanner(
+    tasks: List<ReminderTask>,
+    today: LocalDate,
+    undoTask: ReminderTask?,
+    onComplete: (ReminderTask) -> Unit,
+    onUndo: (ReminderTask) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(15.dp), color = WebCard2,
+        border = androidx.compose.foundation.BorderStroke(1.dp, WebWarm.copy(alpha = .7f)),
+        shadowElevation = 6.dp,
+    ) {
+        Column(Modifier.heightIn(max = 195.dp).verticalScroll(rememberScrollState()).padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text("今日／即將到期事項 · ${tasks.size}", color = WebWarm, fontWeight = FontWeight.Black, fontSize = 12.sp)
+            tasks.forEach { task ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(task.title, color = WebInk, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
+                        Text(ReminderEngine.displayStatus(task, today), color = WebMuted, fontSize = 10.sp)
+                        if (task.windowStart != null) {
+                            Text("可做日期：${ReminderEngine.eligibleDatesSummary(task)}", color = WebBus, fontSize = 10.sp)
+                        }
+                    }
+                    val current = Instant.ofEpochMilli(HkTime.now())
+                    val allowed = task.status != com.quickstamp.timerecorder.data.ReminderTaskStatus.UPCOMING &&
+                        (task.windowStart == null || today in task.eligibleDates) &&
+                        (task.canCompleteFrom == null || !current.isBefore(task.canCompleteFrom)) &&
+                        (task.taskExpiresAt == null || current.isBefore(task.taskExpiresAt))
+                    if (allowed) TextButton(onClick = { onComplete(task) }) {
+                        Text("完成", color = WebGood, fontSize = 11.sp)
+                    }
+                }
+            }
+            undoTask?.let { task ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("已完成：${task.title}", color = WebGood, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { onUndo(task) }) { Text("Undo", color = WebAccent2) }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun TodayMustDoCard(
