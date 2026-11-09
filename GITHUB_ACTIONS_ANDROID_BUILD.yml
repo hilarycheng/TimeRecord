@@ -68,10 +68,8 @@ jobs:
           test -f "$SDK_ROOT/platforms/android-37/android.jar"
           test -d "$SDK_ROOT/build-tools/36.0.0"
 
-      - name: Set up Gradle 9.6.0
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.6.0'
 
       - name: Decode release signing key
         if: ${{ env.SIGNING_KEY_B64 != '' }}
@@ -87,10 +85,10 @@ jobs:
           EOF2
 
       - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
+        run: ./gradlew --no-daemon :app:assembleDebug
 
       - name: Build release APK
-        run: gradle --no-daemon :app:assembleRelease
+        run: ./gradlew --no-daemon :app:assembleRelease
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
