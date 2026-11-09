@@ -2,6 +2,8 @@ import com.quickstamp.timerecorder.audio.AudioProfileEngine
 import com.quickstamp.timerecorder.audio.AudioProfileId
 import com.quickstamp.timerecorder.audio.AudioScheduleConfig
 import com.quickstamp.timerecorder.model.HkTime
+import com.quickstamp.timerecorder.model.RecorderEvent
+import com.quickstamp.timerecorder.model.EventKind
 import java.time.LocalDate
 import java.time.LocalTime
 
@@ -10,6 +12,38 @@ fun main() {
     val monday = LocalDate.of(2026, 11, 9)
     fun at(date: LocalDate, time: String) = date.atTime(LocalTime.parse(time))
         .atZone(HkTime.zone).toInstant().toEpochMilli()
+    val now = at(monday, "17:00")
+    fun event(label: String, time: Long) = RecorderEvent("$label-$time", time, label, EventKind.DEFAULT)
+    val finished = event("放工", at(monday, "16:00"))
+    val journey = listOf(
+        finished,
+        event("落車", at(monday, "16:30")),
+        event("到屋企", at(monday, "16:50")),
+    )
+    val inactive = listOf(
+        event("放工", at(monday.minusDays(1), "16:00")),
+        event("放工", at(monday, "18:00")),
+        event("放工", at(monday.plusDays(1), "16:00")),
+        event("返工", at(monday, "09:00")),
+    )
+    check(AudioProfileEngine.afterWorkOverrideEpochDay(inactive, now) == null)
+    check(AudioProfileEngine.afterWorkOverrideEpochDay(journey + inactive, now) == monday.toEpochDay())
+    check(AudioProfileEngine.afterWorkOverrideEpochDay(journey.filterNot { it == finished }, now) == null)
+    check(AudioProfileEngine.afterWorkOverrideEpochDay(listOf(finished), finished.timestamp) == monday.toEpochDay())
+    check(AudioProfileEngine.afterWorkOverrideEpochDay(journey, at(monday.plusDays(1), "00:00")) == null)
+    check(AudioProfileEngine.afterWorkOverrideEpochDay(emptyList(), now) == null)
+    val anotherFinish = event("放工", at(monday, "15:00"))
+    check(AudioProfileEngine.afterWorkOverrideEpochDay(journey.filterNot { it == finished } + anotherFinish, now)
+        == monday.toEpochDay())
+
+    // Restored or backfilled records work without a saved click override.
+    val restored = AudioScheduleConfig(enabled = true, enforceOnAppOpen = false).copy(
+        afterWorkOverrideEpochDay = AudioProfileEngine.afterWorkOverrideEpochDay(journey, now),
+    )
+    check(AudioProfileEngine.resolve(restored, now, emptySet()).profileId == AudioProfileId.AFTER_WORK)
+    val undone = restored.copy(afterWorkOverrideEpochDay = AudioProfileEngine.afterWorkOverrideEpochDay(inactive, now))
+    check(AudioProfileEngine.resolve(undone, now, emptySet()).profileId == AudioProfileId.OFFICE)
+
     val config = AudioScheduleConfig(enabled = true)
     val override = config.copy(afterWorkOverrideEpochDay = monday.toEpochDay())
     val midnight = at(monday.plusDays(1), "00:00")

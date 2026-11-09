@@ -20,6 +20,10 @@ Menu → **Audio Profiles**
 - Uses exact alarms; no 24-hour audio foreground service
 - Re-schedules after reboot, app replacement and time changes
 - App resume self-check: if enabled and actual volume differs from the profile that should be active now, it re-applies the target levels
+- Opening or returning to the app applies After Work when today's commute records contain a past or current `放工`.
+- This includes restored and backfilled records, even when app-open volume correction is disabled.
+- After Work overrides Office until Hong Kong midnight. Removing the last qualifying record restores the normal schedule.
+- Disabling Audio Schedule disables this behaviour.
 - Ongoing silent notification shows the current profile and next transition
 - Notification tap opens the Audio Profiles page
 - Test Profile and Apply Now actions

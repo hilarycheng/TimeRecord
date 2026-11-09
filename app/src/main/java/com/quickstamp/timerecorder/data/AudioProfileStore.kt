@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.quickstamp.timerecorder.audio.*
+import com.quickstamp.timerecorder.model.HkTime
 import kotlinx.coroutines.flow.first
 import java.time.LocalTime
 
@@ -21,7 +22,7 @@ object AudioProfileStore {
     private fun minuteKey(id: AudioProfileId) = intPreferencesKey("${id.name.lowercase()}_minute")
     private fun levelKey(id: AudioProfileId, field: String) = intPreferencesKey("${id.name.lowercase()}_$field")
 
-    suspend fun load(context: Context): AudioScheduleConfig {
+    suspend fun load(context: Context, now: Long = HkTime.now()): AudioScheduleConfig {
         val p = context.audioProfileDataStore.data.first()
         val defaults = AudioScheduleConfig()
         fun levels(id: AudioProfileId, fallback: AudioLevels): AudioLevels = AudioLevels(
@@ -44,7 +45,7 @@ object AudioProfileStore {
             defaultLevels = levels(AudioProfileId.DEFAULT, defaults.defaultLevels),
             office = scheduled(defaults.office),
             afterWork = scheduled(defaults.afterWork),
-            afterWorkOverrideEpochDay = p[AFTER_WORK_DAY],
+            afterWorkOverrideEpochDay = AudioProfileEngine.afterWorkOverrideEpochDay(AppStore.load(context).events, now),
         )
     }
 
@@ -55,8 +56,14 @@ object AudioProfileStore {
         }
     }
 
-    suspend fun setAfterWorkOverride(context: Context, epochDay: Long) {
-        context.audioProfileDataStore.edit { it[AFTER_WORK_DAY] = epochDay }
+    // Remember the last reconciliation so removing a record also restores volume when enforcement is off.
+    suspend fun setAfterWorkOverride(context: Context, epochDay: Long?): Long? {
+        var previous: Long? = null
+        context.audioProfileDataStore.edit {
+            previous = it[AFTER_WORK_DAY]
+            if (epochDay == null) it.remove(AFTER_WORK_DAY) else it[AFTER_WORK_DAY] = epochDay
+        }
+        return previous
     }
 
     suspend fun setEnforceOnOpen(context: Context, value: Boolean) {

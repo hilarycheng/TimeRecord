@@ -1,6 +1,7 @@
 package com.quickstamp.timerecorder.audio
 
 import com.quickstamp.timerecorder.model.HkTime
+import com.quickstamp.timerecorder.model.RecorderEvent
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -8,6 +9,13 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 
 object AudioProfileEngine {
+    fun afterWorkOverrideEpochDay(events: List<RecorderEvent>, now: Long): Long? {
+        val today = HkTime.date(now)
+        return if (events.any { it.label == "放工" && it.timestamp <= now && HkTime.date(it.timestamp) == today }) {
+            today.toEpochDay()
+        } else null
+    }
+
     fun isWorkingDay(date: LocalDate, holidays: Set<LocalDate>): Boolean =
         date.dayOfWeek !in setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY) && date !in holidays
 

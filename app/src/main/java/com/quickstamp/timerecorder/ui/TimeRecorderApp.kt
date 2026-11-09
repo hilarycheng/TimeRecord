@@ -85,6 +85,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.quickstamp.timerecorder.audio.AudioProfileEngine
+import com.quickstamp.timerecorder.audio.AudioProfileManager
 import com.quickstamp.timerecorder.data.AppStore
 import com.quickstamp.timerecorder.data.RecorderActions
 import com.quickstamp.timerecorder.data.ReminderStore
@@ -263,6 +265,11 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
         }
     }
 
+    val afterWorkDay = AudioProfileEngine.afterWorkOverrideEpochDay(state.events, now)
+    LaunchedEffect(afterWorkDay) {
+        runCatching { AudioProfileManager.reconcileOnAppOpen(context.applicationContext) }
+    }
+
     LaunchedEffect(Unit) { reloadReminders() }
     LaunchedEffect(undoReminderTask?.taskKey) {
         if (undoReminderTask != null) {
@@ -377,7 +384,7 @@ fun TimeRecorderApp(audioProfileRequestSignal: Int = 0, alarmRequestSignal: Int 
         if (alarmOpen) {
             AlarmClockPage(onBack = { alarmOpen = false })
         } else if (audioProfileOpen) {
-            AudioProfilePage(now = now, onBack = { audioProfileOpen = false })
+            AudioProfilePage(now = now, afterWorkOverrideEpochDay = afterWorkDay, onBack = { audioProfileOpen = false })
         } else if (calendarOpen) {
             HolidayCalendarPage(context = context, onBack = { calendarOpen = false })
         } else if (historyOpen) {

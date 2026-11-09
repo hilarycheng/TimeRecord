@@ -38,6 +38,7 @@ import java.util.Locale
 @Composable
 fun AudioProfilePage(
     now: Long,
+    afterWorkOverrideEpochDay: Long?,
     onBack: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -78,7 +79,9 @@ fun AudioProfilePage(
     }
 
     val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-    val resolution = AudioProfileEngine.resolve(cfg, now, holidays, personalLeaveDates)
+    val resolution = AudioProfileEngine.resolve(
+        cfg.copy(afterWorkOverrideEpochDay = afterWorkOverrideEpochDay), now, holidays, personalLeaveDates,
+    )
     val exactAllowed = AudioProfileScheduler.canScheduleExact(context)
     val notificationAllowed = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     val selectedLevels = cfg.levels(selected)
@@ -258,7 +261,7 @@ fun AudioProfilePage(
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Enforce profile on app open", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = WebInk)
-                            Text("開 App 時發現實際音量唔啱，就重新套用目前應有 Profile。", fontSize = 9.sp, color = WebMuted)
+                            Text("開 App 時發現實際音量唔啱，就重新套用目前應有 Profile。今日已記錄放工時，即使關閉此選項，仍會套用 After Work。", fontSize = 9.sp, color = WebMuted)
                         }
                         Switch(
                             checked = cfg.enforceOnAppOpen,

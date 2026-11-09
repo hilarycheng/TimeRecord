@@ -23,11 +23,17 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 object AudioProfileManager {
     const val EXTRA_OPEN_AUDIO_PROFILE = "open_audio_profile"
     private const val CHANNEL_ID = "audio_profile_status"
     private const val NOTIFICATION_ID = 3401
+    // Keep volume changes and the saved override marker together when a UI effect is cancelled.
+    private val profileLock = Mutex()
 
     private fun personalLeaveDates(context: Context, now: Long): Set<LocalDate> {
         val today = Instant.ofEpochMilli(now).atZone(HkTime.zone).toLocalDate()
@@ -37,44 +43,50 @@ object AudioProfileManager {
         return PersonalDayOffCalendar.leaveDates(context, today, today.plusDays(11))
     }
 
-    suspend fun reconcileOnAppOpen(context: Context) {
-        val config = AudioProfileStore.load(context)
-        if (!config.enabled) {
-            AudioProfileScheduler.cancel(context)
-            cancelNotification(context)
-            return
+    suspend fun reconcileOnAppOpen(context: Context) = profileLock.withLock {
+        withContext(NonCancellable) {
+            val now = HkTime.now()
+            val config = AudioProfileStore.load(context, now)
+            if (!config.enabled) {
+                AudioProfileScheduler.cancel(context)
+                cancelNotification(context)
+                return@withContext
+            }
+            val previousOverride = AudioProfileStore.setAfterWorkOverride(context, config.afterWorkOverrideEpochDay)
+            val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
+            val personalLeave = personalLeaveDates(context, now)
+            val resolution = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
+            val enforce = config.enforceOnAppOpen || config.afterWorkOverrideEpochDay != null || previousOverride != null
+            if (enforce && (!matches(context, resolution.levels) || AlarmVolumeGuard.isActive(context))) {
+                applyLevels(context, resolution.levels)
+            }
+            updateNotification(context, config, resolution)
+            AudioProfileScheduler.schedule(context, resolution.nextTransitionAt)
         }
-        val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        val now = HkTime.now()
-        val personalLeave = personalLeaveDates(context, now)
-        val resolution = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
-        if (config.enforceOnAppOpen && !matches(context, resolution.levels)) {
-            applyLevels(context, resolution.levels)
-        }
-        updateNotification(context, config, resolution)
-        AudioProfileScheduler.schedule(context, resolution.nextTransitionAt)
     }
 
-    suspend fun onScheduledTrigger(context: Context) {
-        val config = AudioProfileStore.load(context)
-        if (!config.enabled) {
-            AudioProfileScheduler.cancel(context)
-            cancelNotification(context)
-            return
+    suspend fun onScheduledTrigger(context: Context) = profileLock.withLock {
+        withContext(NonCancellable) {
+            val now = HkTime.now()
+            val config = AudioProfileStore.load(context, now)
+            if (!config.enabled) {
+                AudioProfileScheduler.cancel(context)
+                cancelNotification(context)
+                return@withContext
+            }
+            AudioProfileStore.setAfterWorkOverride(context, config.afterWorkOverrideEpochDay)
+            val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
+            val personalLeave = personalLeaveDates(context, now)
+            val resolution = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
+            applyLevels(context, resolution.levels)
+            updateNotification(context, config, resolution)
+            AudioProfileScheduler.schedule(context, resolution.nextTransitionAt)
         }
-        val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        val now = HkTime.now()
-        val personalLeave = personalLeaveDates(context, now)
-        val resolution = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
-        applyLevels(context, resolution.levels)
-        updateNotification(context, config, resolution)
-        AudioProfileScheduler.schedule(context, resolution.nextTransitionAt)
     }
 
     suspend fun onAfterWorkRecorded(context: Context, recordedAt: Long) {
         val date = HkTime.date(recordedAt)
         if (date != HkTime.today() || !AudioProfileStore.load(context).enabled) return
-        AudioProfileStore.setAfterWorkOverride(context, date.toEpochDay())
         onScheduledTrigger(context)
     }
 
@@ -86,7 +98,7 @@ object AudioProfileManager {
         reconcileOnAppOpen(context)
     }
 
-    suspend fun disable(context: Context) {
+    suspend fun disable(context: Context) = profileLock.withLock {
         AudioProfileStore.setEnabled(context, false)
         AudioProfileScheduler.cancel(context)
         cancelNotification(context)
@@ -146,19 +158,19 @@ object AudioProfileManager {
     }
 
     suspend fun updateStatusNotification(context: Context) {
-        val config = AudioProfileStore.load(context)
+        val now = HkTime.now()
+        val config = AudioProfileStore.load(context, now)
         if (!config.enabled) return cancelNotification(context)
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        val now = HkTime.now()
         val personalLeave = personalLeaveDates(context, now)
         updateNotification(context, config, AudioProfileEngine.resolve(config, now, holidays, personalLeave))
     }
 
     suspend fun showManualProfile(context: Context, label: String, levels: AudioLevels) {
-        val config = AudioProfileStore.load(context)
+        val now = HkTime.now()
+        val config = AudioProfileStore.load(context, now)
         if (!config.enabled) return
         val holidays = HolidayCalendarStore.load(context).holidays.map { it.date }.toSet()
-        val now = HkTime.now()
         val personalLeave = personalLeaveDates(context, now)
         val base = AudioProfileEngine.resolve(config, now, holidays, personalLeave)
         updateNotification(context, config, base.copy(label = "Manual · $label", levels = levels))
