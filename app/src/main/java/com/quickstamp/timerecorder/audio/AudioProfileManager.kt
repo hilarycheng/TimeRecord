@@ -71,6 +71,13 @@ object AudioProfileManager {
         AudioProfileScheduler.schedule(context, resolution.nextTransitionAt)
     }
 
+    suspend fun onAfterWorkRecorded(context: Context, recordedAt: Long) {
+        val date = HkTime.date(recordedAt)
+        if (date != HkTime.today() || !AudioProfileStore.load(context).enabled) return
+        AudioProfileStore.setAfterWorkOverride(context, date.toEpochDay())
+        onScheduledTrigger(context)
+    }
+
     suspend fun refreshHolidayAndReconcile(context: Context) {
         val cache = HolidayCalendarStore.load(context)
         if (HolidayCalendarStore.shouldRefresh(cache)) {

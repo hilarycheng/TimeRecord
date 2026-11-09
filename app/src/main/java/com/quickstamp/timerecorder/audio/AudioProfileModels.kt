@@ -37,6 +37,7 @@ data class AudioScheduleConfig(
     val afterWork: ScheduledAudioProfile = ScheduledAudioProfile(
         AudioProfileId.AFTER_WORK, "After Work", LocalTime.of(18, 0), AudioLevels(70, 70, 50, 80, 50)
     ),
+    val afterWorkOverrideEpochDay: Long? = null,
 ) {
     fun scheduled(): List<ScheduledAudioProfile> = listOf(office, afterWork).sortedBy { it.time }
     fun profile(id: AudioProfileId): ScheduledAudioProfile? = when (id) {

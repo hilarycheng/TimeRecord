@@ -1,6 +1,8 @@
 package com.quickstamp.timerecorder.data
 
 import android.content.Context
+import android.content.Intent
+import com.quickstamp.timerecorder.audio.AudioProfileAlarmReceiver
 import com.quickstamp.timerecorder.model.CommuteMode
 import com.quickstamp.timerecorder.model.EventKind
 import com.quickstamp.timerecorder.model.HkTime
@@ -39,6 +41,14 @@ object RecorderActions {
         )
 
         if (!manual) {
+            if (label == "放工") {
+                runCatching {
+                    app.sendBroadcast(Intent(app, AudioProfileAlarmReceiver::class.java).apply {
+                        action = AudioProfileAlarmReceiver.ACTION_AFTER_WORK
+                        putExtra(AudioProfileAlarmReceiver.EXTRA_RECORDED_AT, timestamp)
+                    })
+                }
+            }
             when {
                 label == "返工" -> runCatching { EtaForegroundService.start(app, CommuteMode.WORK) }
                 label == "放工" -> runCatching { EtaForegroundService.start(app, CommuteMode.HOME) }

@@ -28,13 +28,21 @@ object AudioProfileEngine {
         val time = z.toLocalTime()
         val working = isWorkingDay(date, holidays, personalLeaveDates)
 
-        val active = if (!working) {
+        val afterWorkOverride = config.afterWorkOverrideEpochDay == date.toEpochDay()
+        val active = if (afterWorkOverride) {
+            AudioProfileId.AFTER_WORK
+        } else if (!working) {
             AudioProfileId.DEFAULT
         } else {
             config.scheduled().filter { !it.time.isAfter(time) }.maxByOrNull { it.time }?.id ?: AudioProfileId.DEFAULT
         }
 
-        val next = nextActualTransition(config, now, holidays, personalLeaveDates, active)
+        val next = if (afterWorkOverride) {
+            val midnight = date.plusDays(1).atStartOfDay(HkTime.zone).toInstant().toEpochMilli()
+            midnight to resolve(config, midnight, holidays, personalLeaveDates).label
+        } else {
+            nextActualTransition(config, now, holidays, personalLeaveDates, active)
+        }
         val dayLabel = when {
             date in personalLeaveDates -> "放假"
             date in holidays -> "公眾假期"

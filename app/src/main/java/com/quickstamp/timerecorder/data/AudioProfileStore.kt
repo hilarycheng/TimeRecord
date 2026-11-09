@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.quickstamp.timerecorder.audio.*
 import kotlinx.coroutines.flow.first
@@ -14,6 +15,7 @@ private val Context.audioProfileDataStore by preferencesDataStore(name = "audio_
 object AudioProfileStore {
     private val ENABLED = booleanPreferencesKey("enabled")
     private val ENFORCE_OPEN = booleanPreferencesKey("enforce_on_open")
+    private val AFTER_WORK_DAY = longPreferencesKey("after_work_override_epoch_day")
 
     private fun hourKey(id: AudioProfileId) = intPreferencesKey("${id.name.lowercase()}_hour")
     private fun minuteKey(id: AudioProfileId) = intPreferencesKey("${id.name.lowercase()}_minute")
@@ -42,11 +44,19 @@ object AudioProfileStore {
             defaultLevels = levels(AudioProfileId.DEFAULT, defaults.defaultLevels),
             office = scheduled(defaults.office),
             afterWork = scheduled(defaults.afterWork),
+            afterWorkOverrideEpochDay = p[AFTER_WORK_DAY],
         )
     }
 
     suspend fun setEnabled(context: Context, value: Boolean) {
-        context.audioProfileDataStore.edit { it[ENABLED] = value }
+        context.audioProfileDataStore.edit {
+            it[ENABLED] = value
+            if (!value) it.remove(AFTER_WORK_DAY)
+        }
+    }
+
+    suspend fun setAfterWorkOverride(context: Context, epochDay: Long) {
+        context.audioProfileDataStore.edit { it[AFTER_WORK_DAY] = epochDay }
     }
 
     suspend fun setEnforceOnOpen(context: Context, value: Boolean) {
